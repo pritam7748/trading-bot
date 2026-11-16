@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
 const { evaluateStrategy } = require('./strategy');
 const {
   broadcastTelegramAlert,
@@ -202,6 +203,31 @@ async function start() {
   console.log(`  Symbol: ${config.symbol} | Interval: ${config.interval}`);
   console.log(`  Checking every ${config.pollIntervalSeconds || 30} seconds`);
   console.log('====================================================');
+
+  // Start Render Web Service HTTP Port Listener (Fixes "No open ports detected")
+  const PORT = process.env.PORT || 10000;
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    const activeTrade = getActiveTrade();
+    const tradeText = activeTrade
+      ? `Active Paper Trade: $${activeTrade.tradeAmountUSD} @ $${activeTrade.entryPrice.toFixed(2)}`
+      : 'No Active Trade';
+    res.end(`
+      <html>
+        <head><title>BTC 15m Trading Bot</title></head>
+        <body style="font-family: sans-serif; background: #0f172a; color: white; padding: 2rem; text-align: center;">
+          <h1 style="color: #22c55e;">🚀 BTC 15m Scalping Alert Bot</h1>
+          <p style="font-size: 1.2rem;">Status: <b style="color: #38bdf8;">Healthy & Monitoring 24/7</b></p>
+          <p style="color: #94a3b8;">${tradeText}</p>
+          <p style="color: #64748b; font-size: 0.9rem;">Server Time: ${new Date().toLocaleTimeString()}</p>
+        </body>
+      </html>
+    `);
+  });
+
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ [Render] Web service HTTP port ${PORT} is open and listening. Health check active!`);
+  });
 
   // Start Telegram Command Listener (Handles /start, /stop, /status)
   startTelegramListener(config.telegram.botToken, getLatestStatusMessage);
