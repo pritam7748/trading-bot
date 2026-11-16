@@ -1,0 +1,17 @@
+{
+  "name": "btc-trading-alert-bot",
+  "version": "1.0.0",
+  "description": "BTC 15m Scalping & Paper Trading Bot with Telegram Alerts",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "keywords": [
+    "trading",
+    "bitcoin",
+    "telegram",
+    "bot"
+  ],
+  "author": "",
+  "license": "ISC"
+}
