@@ -1,0 +1,30 @@
+{
+  "symbol": "BTCUSDT",
+  "interval": "15m",
+  "telegram": {
+    "botToken": "9026636218:AAHKit1OfZeSAA8pLp-rjzJFXQEU7o3Mmvc",
+    "chatId": "568561864"
+  },
+  "strategy": {
+    "emaFast": 20,
+    "emaSlow": 50,
+    "rsiPeriod": 14,
+    "rsiBuyMin": 48,
+    "rsiBuyMax": 68,
+    "rsiSellOverbought": 70,
+    "macdFast": 12,
+    "macdSlow": 26,
+    "macdSignal": 9,
+    "volumeMultiplier": 1.0,
+    "lookbackSupportResistance": 20,
+    "tolerancePct": 0.4
+  },
+  "paperTrading": {
+    "enabled": true,
+    "tradeAmountUSD": 1.0,
+    "stopLossPct": 1.0,
+    "takeProfitPct": 30.0,
+    "exitOnSellSignal": true
+  },
+  "pollIntervalSeconds": 30
+}

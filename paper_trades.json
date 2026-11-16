@@ -1,0 +1,11 @@
+{
+  "activeTrade": null,
+  "history": [],
+  "stats": {
+    "totalTrades": 0,
+    "wins": 0,
+    "losses": 0,
+    "totalPnLUSD": 0.0,
+    "winRatePct": 0.0
+  }
+}
