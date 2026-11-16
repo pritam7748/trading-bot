@@ -1,9 +1,17 @@
 /**
- * Telegram Notification & Auto-Subscriber Listener Module
- * Broadcasts initial market snapshot and confirmed BUY/SELL signals to all subscribers.
+ * Telegram Notification & Interactive Command Listener Module
+ * Supports dynamic configuration directly from Telegram:
+ * /settings, /setbalance, /settrade, /setsl, /settp, /status, /help, /start, /stop
  */
 
 const { getSubscribers, addSubscriber, removeSubscriber } = require('./subscriberManager');
+const {
+  getSettingsAndWallet,
+  updateWalletBalance,
+  updateTradeAmount,
+  updateStopLossPct,
+  updateTakeProfitPct
+} = require('./paperTrading');
 
 async function sendTelegramAlert(botToken, chatId, message) {
   if (!botToken || !chatId || botToken.includes('YOUR_')) return false;
@@ -47,14 +55,61 @@ async function broadcastTelegramAlert(botToken, message) {
   await Promise.allSettled(promises);
 }
 
-// Polling listener to automatically handle /start, /stop, /status from ANY user
+function formatSettingsMessage() {
+  const data = getSettingsAndWallet();
+  const { wallet, settings, activeTrade, stats } = data;
+
+  const activeTradeText = activeTrade
+    ? `🟢 *Active Trade:* $${activeTrade.tradeAmountUSD.toFixed(2)} @ $${activeTrade.entryPrice.toFixed(2)} (SL: $${activeTrade.stopLossPrice.toFixed(2)} | TP: $${activeTrade.takeProfitPrice.toFixed(2)})`
+    : '⚪ *Active Trade:* No position currently open';
+
+  return `⚙️ *আপনার ট্রেডিং ও ওয়ালেট সেটিংস*
+━━━━━━━━━━━━━━━━━━━━
+💰 *Wallet Balance:* $${wallet.balance.toFixed(2)} USD
+💵 *Trade Value:* $${settings.tradeAmountUSD.toFixed(2)} USD
+🛡️ *Stop Loss:* ${settings.stopLossPct.toFixed(2)}%
+🎯 *Take Profit:* ${settings.takeProfitPct.toFixed(2)}%
+
+${activeTradeText}
+
+📊 *ট্রেডিং হিস্ট্রি:*
+• মোট ট্রেড: ${stats.totalTrades} | জয়: ${stats.wins} | পরাজয়: ${stats.losses}
+• উইন রেট: ${stats.winRatePct.toFixed(1)}%
+• মোট লাভ/ক্ষতি: ${stats.totalPnLUSD >= 0 ? '+' : ''}$${stats.totalPnLUSD.toFixed(4)} USD
+
+━━━━━━━━━━━━━━━━━━━━
+💡 *সেটিংস পরিবর্তন করার কমান্ডসমূহ:*
+• \`/setbalance 50\` ➡️ ব্যালেন্স পরিবর্তন
+• \`/settrade 10\` ➡️ ট্রেড ভ্যালু পরিবর্তন
+• \`/setsl 1.5\` ➡️ স্টপ লস শতাংশ পরিবর্তন
+• \`/settp 30\` ➡️ টেক প্রফিট শতাংশ পরিবর্তন`;
+}
+
+function formatHelpMessage() {
+  return `🤖 *বটের সমস্ত কমান্ডসমূহ:*
+━━━━━━━━━━━━━━━━━━━━
+⚙️ *সেটিংস ও কন্ট্রোল:*
+• \`/settings\` - বর্তমান ওয়ালেট ব্যালেন্স ও ট্রেড সেটিংস দেখুন
+• \`/setbalance <টাকা>\` - ওয়ালেট ব্যালেন্স সেট করুন (উদা: \`/setbalance 30\`)
+• \`/settrade <টাকা>\` - প্রতি ট্রেডের সাইজ সেট করুন (উদা: \`/settrade 10\`)
+• \`/setsl <শতাংশ>\` - স্টপ লস পারসেন্টেজ সেট করুন (উদা: \`/setsl 1\`)
+• \`/settp <শতাংশ>\` - প্রফিট বুক পারসেন্টেজ সেট করুন (উদা: \`/settp 30\`)
+
+📊 *মার্কেট ও অ্যালার্ট:*
+• \`/status\` - বর্তমান লাইভ মার্কেট ডাটা ও ইন্ডিকেটর অবস্থা
+• \`/start\` - অ্যালার্ট চালু / সাবস্ক্রাইব করুন
+• \`/stop\` - অ্যালার্ট সাময়িকভাবে বন্ধ করুন
+━━━━━━━━━━━━━━━━━━━━`;
+}
+
+// Polling listener to automatically handle commands from ANY user
 let lastUpdateId = 0;
 let isPolling = false;
 
 function startTelegramListener(botToken, getMarketSnapshot) {
   if (isPolling || !botToken || botToken.includes('YOUR_')) return;
   isPolling = true;
-  console.log('🤖 [Telegram Listener] Auto-subscriber listener started. Listening for /start...');
+  console.log('🤖 [Telegram Listener] Interactive command listener started. Listening for /settings, /settrade, etc...');
 
   async function poll() {
     try {
@@ -72,35 +127,87 @@ function startTelegramListener(botToken, getMarketSnapshot) {
             const chatId = message.chat.id;
             const user = message.from || {};
             const userName = user.first_name || 'Trader';
+            const parts = text.split(/\s+/);
+            const cmd = parts[0].toLowerCase();
+            const arg = parts[1];
 
-            if (text.startsWith('/start')) {
+            // 1. /start Command
+            if (cmd === '/start' || cmd.startsWith('/start@')) {
               addSubscriber(chatId, user);
               const welcomeMsg = `🎉 *স্বাগতম, ${userName}!*
 ━━━━━━━━━━━━━━━━━━━━
-✅ *আপনি সফলভাবে BTC 15m ট্রেডিং অ্যালার্টে সাবস্ক্রাইব করেছেন!*
+✅ *আপনি সফলভাবে BTC 15m ট্রেডিং অ্যালার্টে যুক্ত হয়েছেন!*
 
 এখন থেকে বিটকয়েনের নিশ্চিত BUY বা SELL সিগন্যাল তৈরি হলেই সরাসরি আপনার কাছে অ্যালার্ট পৌঁছে যাবে।
 
-🎯 *ট্রেডিং সেটিংস:*
-• ট্রেড সাইজ: $1.00 USD
-• স্টপ লস (SL): 1.00%
-• প্রফিট বুক (TP): 30.00%
+${formatSettingsMessage()}
 
-📋 *কমান্ডসমূহ:*
-• /status - বর্তমান লাইভ মার্কেট ও ইন্ডিকেটর অবস্থা দেখুন
-• /stop - অ্যালার্ট বন্ধ করুন
-━━━━━━━━━━━━━━━━━━━━`;
+📌 সমস্ত কমান্ড দেখতে পাঠান: \`/help\``;
               await sendTelegramAlert(botToken, chatId, welcomeMsg);
+            }
 
-              if (getMarketSnapshot) {
-                const snapshotMsg = getMarketSnapshot();
-                if (snapshotMsg) await sendTelegramAlert(botToken, chatId, snapshotMsg);
+            // 2. /settings or /config or /wallet
+            else if (cmd === '/settings' || cmd === '/config' || cmd === '/wallet') {
+              await sendTelegramAlert(botToken, chatId, formatSettingsMessage());
+            }
+
+            // 3. /setbalance <amount>
+            else if (cmd === '/setbalance' || cmd === '/balance') {
+              const val = parseFloat(arg);
+              if (isNaN(val) || val < 0) {
+                await sendTelegramAlert(botToken, chatId, '⚠️ অনুগ্রহ করে সঠিক সংখ্যা লিখুন। যেমন: `/setbalance 30`');
+              } else {
+                const newBal = updateWalletBalance(val);
+                await sendTelegramAlert(botToken, chatId, `✅ *ওয়ালেট ব্যালেন্স সফলভাবে আপডেট করা হয়েছে!* \n💰 বর্তমান ব্যালেন্স: *$${newBal.toFixed(2)} USD*`);
               }
-            } else if (text.startsWith('/stop')) {
+            }
+
+            // 4. /settrade <amount>
+            else if (cmd === '/settrade' || cmd === '/trade') {
+              const val = parseFloat(arg);
+              if (isNaN(val) || val <= 0) {
+                await sendTelegramAlert(botToken, chatId, '⚠️ অনুগ্রহ করে সঠিক সংখ্যা লিখুন। যেমন: `/settrade 10`');
+              } else {
+                const newTrade = updateTradeAmount(val);
+                await sendTelegramAlert(botToken, chatId, `✅ *প্রতি ট্রেডের ভ্যালু সফলভাবে সেট করা হয়েছে!* \n💵 Per Trade Size: *$${newTrade.toFixed(2)} USD*`);
+              }
+            }
+
+            // 5. /setsl <percentage>
+            else if (cmd === '/setsl' || cmd === '/sl') {
+              const val = parseFloat(arg);
+              if (isNaN(val) || val <= 0 || val >= 50) {
+                await sendTelegramAlert(botToken, chatId, '⚠️ অনুগ্রহ করে সঠিক পারসেন্টেজ লিখুন (0.1 থেকে 50 এর মধ্যে)। যেমন: `/setsl 1` বা `/setsl 1.5`');
+              } else {
+                const newSL = updateStopLossPct(val);
+                await sendTelegramAlert(botToken, chatId, `✅ *স্টপ লস (Stop Loss) সেট করা হয়েছে:* *${newSL.toFixed(2)}%* 🛡️`);
+              }
+            }
+
+            // 6. /settp <percentage>
+            else if (cmd === '/settp' || cmd === '/tp') {
+              const val = parseFloat(arg);
+              if (isNaN(val) || val <= 0) {
+                await sendTelegramAlert(botToken, chatId, '⚠️ অনুগ্রহ করে সঠিক পারসেন্টেজ লিখুন। যেমন: `/settp 30` বা `/settp 15`');
+              } else {
+                const newTP = updateTakeProfitPct(val);
+                await sendTelegramAlert(botToken, chatId, `✅ *টেক প্রফিট (Profit Target) সেট করা হয়েছে:* *${newTP.toFixed(2)}%* 🎯`);
+              }
+            }
+
+            // 7. /help
+            else if (cmd === '/help') {
+              await sendTelegramAlert(botToken, chatId, formatHelpMessage());
+            }
+
+            // 8. /stop
+            else if (cmd === '/stop') {
               removeSubscriber(chatId);
-              const byeMsg = `🛑 *অ্যালার্ট সার্ভিস বন্ধ করা হয়েছে।*\n\nপুনরায় অ্যালার্ট চালু করতে যেকোনো সময় আবার */start* পাঠান।`;
-              await sendTelegramAlert(botToken, chatId, byeMsg);
-            } else if (text.startsWith('/status')) {
+              await sendTelegramAlert(botToken, chatId, '🛑 *অ্যালার্ট সার্ভিস বন্ধ করা হয়েছে।*\n\nপুনরায় চালু করতে যেকোনো সময় আবার `/start` পাঠান।');
+            }
+
+            // 9. /status
+            else if (cmd === '/status') {
               if (getMarketSnapshot) {
                 const snapshotMsg = getMarketSnapshot();
                 await sendTelegramAlert(botToken, chatId, snapshotMsg || 'মার্কেট ডাটা লোড হচ্ছে, কিছুক্ষণ পর চেষ্টা করুন।');
@@ -117,19 +224,22 @@ function startTelegramListener(botToken, getMarketSnapshot) {
   poll();
 }
 
-function formatStartupMessage(result, symbol = 'BTC/USDT', interval = '15m', config = {}) {
+function formatStartupMessage(result, symbol = 'BTC/USDT', interval = '15m') {
   const { price, indicators, buyConditions } = result;
   const timeStr = new Date().toLocaleTimeString();
-  const tradeAmount = config.paperTrading?.tradeAmountUSD || 1.0;
-  const slPct = config.paperTrading?.stopLossPct || 1.0;
-  const tpPct = config.paperTrading?.takeProfitPct || 30.0;
+  const { wallet, settings } = getSettingsAndWallet();
 
   return `🟢 *[BOT STARTED & MONITORING]*
 ━━━━━━━━━━━━━━━━━━━━
 🤖 *Bot Status:* Live & Watching 15m Candles
 ⏰ *Start Time:* ${timeStr}
 📊 *Symbol:* ${symbol} (${interval})
-💵 *Settings:* $${tradeAmount.toFixed(2)} / Trade | SL: ${slPct}% | TP: ${tpPct}%
+
+⚙️ *Active Wallet Settings:*
+💰 *Wallet Balance:* $${wallet.balance.toFixed(2)} USD
+💵 *Trade Value:* $${settings.tradeAmountUSD.toFixed(2)} USD
+🛡️ *Stop Loss:* ${settings.stopLossPct.toFixed(2)}%
+🎯 *Take Profit:* ${settings.takeProfitPct.toFixed(2)}%
 
 📈 *Current Market Snapshot:*
 💰 *Live BTC Price:* $${price.toFixed(2)}
@@ -137,45 +247,43 @@ function formatStartupMessage(result, symbol = 'BTC/USDT', interval = '15m', con
 📈 *EMA 50:* $${indicators.ema50 ? indicators.ema50.toFixed(2) : 'N/A'}
 📊 *RSI (14):* ${indicators.rsi ? indicators.rsi.toFixed(2) : 'N/A'}
 ⚡ *MACD:* Line (${indicators.macd ? indicators.macd.toFixed(2) : 'N/A'}) | Signal (${indicators.signal ? indicators.signal.toFixed(2) : 'N/A'})
-🛡️ *Support:* $${indicators.support ? indicators.support.toFixed(2) : 'N/A'}
-🎯 *Resistance:* $${indicators.resistance ? indicators.resistance.toFixed(2) : 'N/A'}
 
 📋 *Strategy Checklist (Need all 5 for BUY):*
-• Trend (EMA 20 > EMA 50 & Price > EMA 20): ${buyConditions.trendAligned ? '✅' : '❌'}
-• RSI in Optimal Range (48–68 & Rising): ${buyConditions.rsiInOptimalZone ? '✅' : '❌'}
-• MACD Bullish & Expanding: ${buyConditions.macdBullishExpanding ? '✅' : '❌'}
-• Volume Confirmed (Healthy Buying): ${buyConditions.volumeConfirmed ? '✅' : '❌'}
-• Support / EMA20 Bounce: ${buyConditions.supportBounce ? '✅' : '❌'}
+• Trend Aligned: ${buyConditions.trendAligned ? '✅' : '❌'}
+• RSI in Range (48-68 & Rising): ${buyConditions.rsiInOptimalZone ? '✅' : '❌'}
+• MACD Bullish: ${buyConditions.macdBullishExpanding ? '✅' : '❌'}
+• Volume Confirmed: ${buyConditions.volumeConfirmed ? '✅' : '❌'}
+• Support Bounce: ${buyConditions.supportBounce ? '✅' : '❌'}
 ━━━━━━━━━━━━━━━━━━━━
-🔔 স্ক্রিপ্ট চলছে। শুধুমাত্র কনফার্মড BUY বা SELL সিগন্যাল তৈরি হলেই পরবর্তী নোটিফিকেশন পাবেন।`;
+💡 যেকোনো সময় সেটিংস পরিবর্তন করতে \`/settings\` অথবা \`/help\` পাঠান।`;
 }
 
-function formatBuyMessage(evaluation, symbol = 'BTC/USDT', interval = '15m', config = {}) {
+function formatBuyMessage(evaluation, symbol = 'BTC/USDT', interval = '15m') {
   const { price, indicators } = evaluation;
   const timeStr = new Date(evaluation.closeTime || Date.now()).toLocaleTimeString();
-  const slPct = config.paperTrading?.stopLossPct || 1.0;
-  const tpPct = config.paperTrading?.takeProfitPct || 30.0;
-  const slPrice = price * (1 - slPct / 100);
-  const tpPrice = price * (1 + tpPct / 100);
+  const { wallet, settings } = getSettingsAndWallet();
+  const slPrice = price * (1 - settings.stopLossPct / 100);
+  const tpPrice = price * (1 + settings.takeProfitPct / 100);
 
   return `🚀 *[BUY SIGNAL CONFIRMED] ${symbol} (${interval})*
 ━━━━━━━━━━━━━━━━━━━━
 💰 *Entry Price:* $${price.toFixed(2)}
 ⏰ *Candle Close:* ${timeStr}
-💵 *Trade Size:* $${(config.paperTrading?.tradeAmountUSD || 1.0).toFixed(2)} USD
+💵 *Trade Value:* $${settings.tradeAmountUSD.toFixed(2)} USD
+💼 *Wallet Balance:* $${wallet.balance.toFixed(2)} USD
 
 *📋 All 5 Conditions Confirmed:*
 ✅ *Trend Alignment:* EMA 20 ($${indicators.ema20.toFixed(2)}) > EMA 50 ($${indicators.ema50.toFixed(2)})
-✅ *RSI Momentum:* ${indicators.rsi.toFixed(2)} (Strong Bullish Zone)
-✅ *MACD:* Bullish (${indicators.macd.toFixed(2)}) > Signal (${indicators.signal.toFixed(2)})
-✅ *Volume:* Confirmed Institutional Participation
-✅ *Price Action:* Clean Support / EMA 20 Bounce
+✅ *RSI Momentum:* ${indicators.rsi.toFixed(2)} (Bullish Momentum)
+✅ *MACD Expansion:* Bullish Cross & Growing
+✅ *Volume Participation:* Institutional Buyers Confirmed
+✅ *Price Action:* Support / EMA 20 Bounce
 
 *🎯 Targets & Risk Management:*
-🛡️ *Stop-Loss (1%):* $${slPrice.toFixed(2)}
-🎯 *Take-Profit (30%):* $${tpPrice.toFixed(2)}
+🛡️ *Stop-Loss (${settings.stopLossPct}%):* $${slPrice.toFixed(2)}
+🎯 *Take-Profit (${settings.takeProfitPct}%):* $${tpPrice.toFixed(2)}
 ━━━━━━━━━━━━━━━━━━━━
-⚠️ *Action:* $1 এর ভার্চুয়াল লং ট্রেড শুরু হয়েছে এবং লাইভ ট্র্যাক করা হচ্ছে।`;
+⚠️ *Action:* $${settings.tradeAmountUSD.toFixed(2)} এর ভার্চুয়াল লং পজিশন ওপেন করা হয়েছে।`;
 }
 
 function formatSellMessage(evaluation, symbol = 'BTC/USDT', interval = '15m') {
@@ -183,18 +291,10 @@ function formatSellMessage(evaluation, symbol = 'BTC/USDT', interval = '15m') {
   const timeStr = new Date(evaluation.closeTime || Date.now()).toLocaleTimeString();
 
   const signals = [];
-  if (sellConditions.emaDeathCross) {
-    signals.push(`⚠️ *EMA Death Cross:* EMA 20 crossed below EMA 50`);
-  }
-  if (sellConditions.rsiOverboughtCollapse) {
-    signals.push(`⚠️ *RSI Overbought Drop:* Dropped below 68 from 70+`);
-  }
-  if (sellConditions.macdBearishCross) {
-    signals.push(`⚠️ *MACD Bearish Cross:* MACD crossed below Signal line`);
-  }
-  if (sellConditions.resistanceRejection) {
-    signals.push(`⚠️ *Resistance Rejection:* Strong rejection from resistance`);
-  }
+  if (sellConditions.emaDeathCross) signals.push(`⚠️ *EMA Death Cross:* EMA 20 crossed below EMA 50`);
+  if (sellConditions.rsiOverboughtCollapse) signals.push(`⚠️ *RSI Overbought Drop:* Dropped below 68 from 70+`);
+  if (sellConditions.macdBearishCross) signals.push(`⚠️ *MACD Bearish Cross:* MACD crossed below Signal`);
+  if (sellConditions.resistanceRejection) signals.push(`⚠️ *Resistance Rejection:* Strong rejection from resistance`);
 
   return `🚨 *[SELL / EXIT SIGNAL] ${symbol} (${interval})*
 ━━━━━━━━━━━━━━━━━━━━
@@ -206,36 +306,37 @@ ${signals.join('\n')}
 
 *💡 Recommendation:*
 • পজিশন এক্সিট করুন অথবা প্রফিট বুক করুন।
-• যদি লং ট্রেডে থাকেন, তবে রানিং ট্রেড ক্লোজ করা হয়েছে।
+• যদি কোনো ওপেন ট্রেড থাকে, তবে সেটি ক্লোজ করা হয়েছে।
 ━━━━━━━━━━━━━━━━━━━━`;
 }
 
-function formatTradeOpenedMessage(trade, symbol = 'BTC/USDT') {
+function formatTradeOpenedMessage(trade, wallet, symbol = 'BTC/USDT') {
   const timeStr = new Date(trade.entryTime || Date.now()).toLocaleTimeString();
   return `📥 *[PAPER TRADE OPENED] ${symbol}*
 ━━━━━━━━━━━━━━━━━━━━
-💵 *Position Size:* $${trade.tradeAmountUSD.toFixed(2)} USD
+💵 *Trade Value:* $${trade.tradeAmountUSD.toFixed(2)} USD
+💰 *Wallet Balance:* $${wallet.balance.toFixed(2)} USD
 📈 *Entry Price:* $${trade.entryPrice.toFixed(2)}
 🛡️ *Stop Loss (${trade.stopLossPct}%):* $${trade.stopLossPrice.toFixed(2)}
 🎯 *Take Profit (${trade.takeProfitPct}%):* $${trade.takeProfitPrice.toFixed(2)}
 ⏰ *Entry Time:* ${timeStr}
 ━━━━━━━━━━━━━━━━━━━━
-📌 পজিশনটি লাইভ ট্র্যাক করা হচ্ছে। স্টপ লস বা ৩০% টার্গেটে স্বয়ংক্রিয়ভাবে লাভ/ক্ষতির হিসাব আসবে।`;
+📌 পজিশনটি লাইভ ট্র্যাক করা হচ্ছে।`;
 }
 
-function formatTradeClosedMessage(closedTrade, stats, symbol = 'BTC/USDT') {
+function formatTradeClosedMessage(closedTrade, stats, wallet, symbol = 'BTC/USDT') {
   const timeStr = new Date(closedTrade.exitTime || Date.now()).toLocaleTimeString();
   const isProfit = closedTrade.pnlUSD >= 0;
   const emoji = isProfit ? '🎉' : '🛑';
   const reasonText =
-    closedTrade.reason === 'STOP_LOSS_HIT' ? '1% Stop Loss Hit 🛡️' :
-    closedTrade.reason === 'TAKE_PROFIT_HIT' ? '30% Profit Target Hit 🎯' :
+    closedTrade.reason === 'STOP_LOSS_HIT' ? `${closedTrade.stopLossPct}% Stop Loss Hit 🛡️` :
+    closedTrade.reason === 'TAKE_PROFIT_HIT' ? `${closedTrade.takeProfitPct}% Profit Target Reached 🎯` :
     'Sell / Exit Signal Triggered 🔔';
 
   return `${emoji} *[PAPER TRADE CLOSED] ${symbol}*
 ━━━━━━━━━━━━━━━━━━━━
 📋 *Exit Reason:* ${reasonText}
-💵 *Trade Size:* $${closedTrade.tradeAmountUSD.toFixed(2)} USD
+💵 *Trade Value:* $${closedTrade.tradeAmountUSD.toFixed(2)} USD
 📈 *Entry Price:* $${closedTrade.entryPrice.toFixed(2)}
 📉 *Exit Price:* $${closedTrade.exitPrice.toFixed(2)}
 ⏰ *Close Time:* ${timeStr}
@@ -244,12 +345,13 @@ function formatTradeClosedMessage(closedTrade, stats, symbol = 'BTC/USDT') {
 💰 *PnL (%):* ${isProfit ? '+' : ''}${closedTrade.pnlPct.toFixed(2)}%
 💵 *PnL ($):* ${isProfit ? '+' : ''}$${closedTrade.pnlUSD.toFixed(4)} USD
 
+💼 *Updated Wallet Balance:* *$${wallet.balance.toFixed(2)} USD*
 ━━━━━━━━━━━━━━━━━━━━
-📊 *Overall Paper Trading Scorecard:*
+📊 *Overall Performance Scorecard:*
 • Total Trades: ${stats.totalTrades}
 • Wins: ${stats.wins} | Losses: ${stats.losses}
 • Win Rate: ${stats.winRatePct.toFixed(1)}%
-• Net PnL: ${stats.totalPnLUSD >= 0 ? '+' : ''}$${stats.totalPnLUSD.toFixed(4)} USD
+• Net Realized PnL: ${stats.totalPnLUSD >= 0 ? '+' : ''}$${stats.totalPnLUSD.toFixed(4)} USD
 ━━━━━━━━━━━━━━━━━━━━`;
 }
 
@@ -257,6 +359,8 @@ module.exports = {
   sendTelegramAlert,
   broadcastTelegramAlert,
   startTelegramListener,
+  formatSettingsMessage,
+  formatHelpMessage,
   formatStartupMessage,
   formatBuyMessage,
   formatSellMessage,

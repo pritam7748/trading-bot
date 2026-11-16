@@ -1,11 +1,21 @@
 {
+  "wallet": {
+    "balance": 40,
+    "initialBalance": 30
+  },
+  "settings": {
+    "tradeAmountUSD": 10,
+    "stopLossPct": 1,
+    "takeProfitPct": 30,
+    "exitOnSellSignal": true
+  },
   "activeTrade": null,
   "history": [],
   "stats": {
     "totalTrades": 0,
     "wins": 0,
     "losses": 0,
-    "totalPnLUSD": 0.0,
-    "winRatePct": 0.0
+    "totalPnLUSD": 0,
+    "winRatePct": 0
   }
 }
