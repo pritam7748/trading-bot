@@ -1,6 +1,7 @@
 /**
  * Technical Indicators Calculation Module
  * Pure JavaScript, no external dependencies required.
+ * Includes EMA, RSI, MACD, Support/Resistance, and ATR (Average True Range).
  */
 
 // Exponential Moving Average (EMA)
@@ -9,21 +10,16 @@ function calculateEMA(prices, period) {
   const k = 2 / (period + 1);
   const emaArray = new Array(prices.length).fill(null);
 
-  // Initial SMA for first period elements
   let sum = 0;
-  for (let i = 0; i < period; i++) {
-    sum += prices[i];
-  }
+  for (let i = 0; i < period; i++) sum += prices[i];
   let prevEma = sum / period;
   emaArray[period - 1] = prevEma;
 
-  // Calculate subsequent EMAs
   for (let i = period; i < prices.length; i++) {
     const currentEma = (prices[i] - prevEma) * k + prevEma;
     emaArray[i] = currentEma;
     prevEma = currentEma;
   }
-
   return emaArray;
 }
 
@@ -34,7 +30,6 @@ function calculateRSI(closes, period = 14) {
 
   let gains = 0;
   let losses = 0;
-
   for (let i = 1; i <= period; i++) {
     const diff = closes[i] - closes[i - 1];
     if (diff >= 0) gains += diff;
@@ -43,7 +38,6 @@ function calculateRSI(closes, period = 14) {
 
   let avgGain = gains / period;
   let avgLoss = losses / period;
-
   let rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
   rsiArray[period] = 100 - (100 / (1 + rs));
 
@@ -58,7 +52,6 @@ function calculateRSI(closes, period = 14) {
     rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
     rsiArray[i] = 100 - (100 / (1 + rs));
   }
-
   return rsiArray;
 }
 
@@ -74,7 +67,6 @@ function calculateMACD(closes, fastPeriod = 12, slowPeriod = 26, signalPeriod = 
     }
   }
 
-  // Find first index where MACD line has valid values
   const validMacdStartIndex = macdLine.findIndex(val => val !== null);
   if (validMacdStartIndex === -1 || macdLine.length - validMacdStartIndex < signalPeriod) {
     return closes.map(() => ({ macd: null, signal: null, histogram: null }));
@@ -95,7 +87,44 @@ function calculateMACD(closes, fastPeriod = 12, slowPeriod = 26, signalPeriod = 
       result.push({ macd, signal, histogram });
     }
   }
+  return result;
+}
 
+// Average True Range (ATR) - Measures Market Volatility for Dynamic SL/TP
+function calculateATR(candles, period = 14) {
+  if (candles.length <= period) return new Array(candles.length).fill(null);
+  const tr = [candles[0].high - candles[0].low];
+
+  for (let i = 1; i < candles.length; i++) {
+    const hl = candles[i].high - candles[i].low;
+    const hc = Math.abs(candles[i].high - candles[i - 1].close);
+    const lc = Math.abs(candles[i].low - candles[i - 1].close);
+    tr.push(Math.max(hl, hc, lc));
+  }
+
+  const atr = new Array(candles.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += tr[i];
+  atr[period - 1] = sum / period;
+
+  for (let i = period; i < candles.length; i++) {
+    atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period;
+  }
+  return atr;
+}
+
+// Simple Moving Average
+function calculateSMA(data, period) {
+  if (data.length < period) return new Array(data.length).fill(null);
+  const result = new Array(data.length).fill(null);
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += data[i];
+  result[period - 1] = sum / period;
+
+  for (let i = period; i < data.length; i++) {
+    sum += data[i] - data[i - period];
+    result[i] = sum / period;
+  }
   return result;
 }
 
@@ -120,5 +149,7 @@ module.exports = {
   calculateEMA,
   calculateRSI,
   calculateMACD,
+  calculateATR,
+  calculateSMA,
   calculateSupportResistance
 };

@@ -4,12 +4,29 @@
     "initialBalance": 30
   },
   "settings": {
+    "mode": "AI",
     "tradeAmountUSD": 10,
     "stopLossPct": 1,
     "takeProfitPct": 30,
+    "maxPositions": 3,
+    "allowScalingIn": true,
     "exitOnSellSignal": true
   },
-  "activeTrade": null,
+  "evolvedStrategy": {
+    "generation": 1,
+    "activeStyle": "DEFENSIVE_RANGE_SCALPING 🛡️",
+    "confidenceThreshold": 68,
+    "rsiBuyMin": 46,
+    "rsiBuyMax": 62,
+    "atrMultiplierSL": 1.4,
+    "riskRewardTarget": 1.8,
+    "volumeMultiplier": 0.95,
+    "maxPositions": 1,
+    "allowScalingIn": false,
+    "lastAdaptedAt": 1794920558264,
+    "adaptationLog": "মার্কেট সাইডওয়েজে থাকায় AI রক্ষণাত্মক মোডে গেছে: স্কেলিং বন্ধ এবং দ্রুত প্রফিট লক (1:1.8 RR)।"
+  },
+  "activeTrades": [],
   "history": [],
   "stats": {
     "totalTrades": 0,

@@ -1,30 +1,20 @@
 /**
- * Optimized Strategy Evaluation Module (15m BTC Scalping & Trend Following)
- * Designed for high win-rate with volume confirmation and fresh signal triggers.
+ * Strategy Evaluation Module (Integrated with AI Market Intelligence Engine)
+ * Combines 5 technical indicators with AI regime detection and dynamic SL/TP calculation.
  */
 
 const {
   calculateEMA,
   calculateRSI,
   calculateMACD,
+  calculateATR,
+  calculateSMA,
   calculateSupportResistance
 } = require('./indicators');
 
-function calculateSMA(data, period) {
-  if (data.length < period) return new Array(data.length).fill(null);
-  const result = new Array(data.length).fill(null);
-  let sum = 0;
-  for (let i = 0; i < period; i++) sum += data[i];
-  result[period - 1] = sum / period;
+const { analyzeMarketWithAI } = require('./aiEngine');
 
-  for (let i = period; i < data.length; i++) {
-    sum += data[i] - data[i - period];
-    result[i] = sum / period;
-  }
-  return result;
-}
-
-function evaluateStrategy(candles, config) {
+function evaluateStrategy(candles, config, walletBalance = 30, tradeHistory = [], currentEvolved = null) {
   const lookback = config.strategy.lookbackSupportResistance || 20;
   const tolerancePct = (config.strategy.tolerancePct || 0.4) / 100;
 
@@ -40,6 +30,7 @@ function evaluateStrategy(candles, config) {
     config.strategy.macdSlow || 26,
     config.strategy.macdSignal || 9
   );
+  const atr = calculateATR(candles, 14);
   const volSMA = calculateSMA(volumes, 20);
 
   const targetIndex = candles.length - 1;
@@ -63,20 +54,38 @@ function evaluateStrategy(candles, config) {
   const currentMACD = macd[targetIndex];
   const prevMACD = macd[prevIndex];
 
+  const currentATR = atr[targetIndex];
   const currentVol = currentCandle.volume;
   const avgVol = volSMA[targetIndex] || currentVol;
 
   const { support, resistance } = calculateSupportResistance(candles, lookback, targetIndex);
 
-  // --- Dynamic Support Bounce Check ---
-  // Bounce from either static Support or dynamic EMA20
+  const indicators = {
+    ema20: currentEMA20,
+    ema50: currentEMA50,
+    rsi: currentRSI,
+    prevRSI: prevRSI,
+    macd: currentMACD.macd,
+    signal: currentMACD.signal,
+    histogram: currentMACD.histogram,
+    atr: currentATR,
+    support,
+    resistance,
+    avgVolume: avgVol
+  };
+
+  // Run AI Engine Analysis with Strategy Evolution
+  const aiAnalysis = analyzeMarketWithAI(candles, indicators, walletBalance, tradeHistory, currentEvolved);
+  const evolved = aiAnalysis.evolvedStrategy;
+
+  // Dynamic Support Bounce Check
   const touchedSupport = support !== null && currentCandle.low <= support * (1 + tolerancePct);
   const touchedEMA20 = currentEMA20 !== null && currentCandle.low <= currentEMA20 * (1 + tolerancePct) && currentCandle.close >= currentEMA20;
   const closedAboveSupport = (support !== null && currentCandle.close > support) || (currentEMA20 !== null && currentCandle.close >= currentEMA20);
   const isBullishCandle = currentCandle.close >= currentCandle.open;
   const isSupportBounce = (touchedSupport || touchedEMA20) && closedAboveSupport && isBullishCandle;
 
-  // --- Dynamic Resistance Rejection Check ---
+  // Dynamic Resistance Rejection Check
   const touchedResistance = resistance !== null && currentCandle.high >= resistance * (1 - tolerancePct);
   const closedBelowResistance = resistance !== null && currentCandle.close < resistance;
   const upperWick = currentCandle.high - Math.max(currentCandle.open, currentCandle.close);
@@ -85,43 +94,67 @@ function evaluateStrategy(candles, config) {
   const isResistanceRejection = touchedResistance && closedBelowResistance && isBearishRejection;
 
   // ==========================================
-  // 🟢 OPTIMIZED BUY CONDITIONS (ALL 5 REQUIRED)
+  // 🟢 OPTIMIZED BUY CONDITIONS (AI-ADAPTED THRESHOLDS)
   // ==========================================
-  // 1. Trend: EMA 20 > EMA 50 AND price is above EMA 20
-  const buyCond1_Trend = currentEMA20 !== null && currentEMA50 !== null && currentEMA20 > currentEMA50 && currentCandle.close >= currentEMA20;
-  
-  // 2. Momentum: RSI between 48 and 68, expanding upward
-  const buyCond2_RSI = currentRSI !== null && currentRSI >= (config.strategy.rsiBuyMin || 48) && currentRSI <= (config.strategy.rsiBuyMax || 68) && currentRSI >= (prevRSI || 0);
+  const rsiMin = evolved?.rsiBuyMin || config.strategy.rsiBuyMin || 48;
+  const rsiMax = evolved?.rsiBuyMax || config.strategy.rsiBuyMax || 68;
+  const volMult = evolved?.volumeMultiplier || config.strategy.volumeMultiplier || 0.95;
+  const confidenceBar = evolved?.confidenceThreshold || 65;
 
-  // 3. MACD: MACD Line > Signal Line AND (just crossed OR histogram is expanding positive)
+  const buyCond1_Trend = currentEMA20 !== null && currentEMA50 !== null && currentEMA20 > currentEMA50 && currentCandle.close >= currentEMA20;
+  const buyCond2_RSI = currentRSI !== null && currentRSI >= rsiMin && currentRSI <= rsiMax && currentRSI >= (prevRSI || 0);
   const isMacdBullish = currentMACD.macd !== null && currentMACD.signal !== null && currentMACD.macd > currentMACD.signal;
   const isMacdGrowing = currentMACD.histogram !== null && prevMACD.histogram !== null && currentMACD.histogram >= prevMACD.histogram;
   const buyCond3_MACD = isMacdBullish && isMacdGrowing;
-
-  // 4. Volume Confirmation: healthy participation (prevents fakeouts during low volume)
-  const buyCond4_Volume = currentVol >= avgVol * (config.strategy.volumeMultiplier || 0.95);
-
-  // 5. Support / Price Action: Support or EMA20 bounce confirmation
+  const buyCond4_Volume = currentVol >= avgVol * volMult;
   const buyCond5_Support = isSupportBounce;
+  const buyCond6_AIScore = aiAnalysis.score >= confidenceBar;
 
-  const isBuySignal = buyCond1_Trend && buyCond2_RSI && buyCond3_MACD && buyCond4_Volume && buyCond5_Support;
+  const isBuySignal = buyCond1_Trend && buyCond2_RSI && buyCond3_MACD && buyCond4_Volume && buyCond5_Support && buyCond6_AIScore;
 
   // ==========================================
-  // 🔴 OPTIMIZED SELL / EXIT SIGNALS (FRESH TRIGGERS ONLY)
+  // 🔴 DETAILED SELL / EXIT SIGNALS
   // ==========================================
-  // 1. Fresh Trend Breakdown: EMA 20 crosses below EMA 50
   const sellCond1_EMACross = prevEMA20 !== null && prevEMA50 !== null && currentEMA20 !== null && currentEMA50 !== null && prevEMA20 >= prevEMA50 && currentEMA20 < currentEMA50;
-
-  // 2. Fresh RSI Overbought Collapse: RSI peaked above 70 and just dropped back down
   const sellCond2_RSICollapse = prevRSI !== null && currentRSI !== null && prevRSI >= (config.strategy.rsiSellOverbought || 70) && currentRSI < 68;
-
-  // 3. Fresh MACD Bearish Crossover: MACD line was above signal and just crossed below
   const sellCond3_MACDCross = prevMACD.macd !== null && prevMACD.signal !== null && currentMACD.macd !== null && currentMACD.signal !== null && prevMACD.macd >= prevMACD.signal && currentMACD.macd < currentMACD.signal;
-
-  // 4. Resistance Rejection Breakdown
   const sellCond4_Resistance = isResistanceRejection;
+  const sellCond5_AIBearish = aiAnalysis.score <= 35 && prevMACD.macd < prevMACD.signal;
 
-  const isSellSignal = sellCond1_EMACross || sellCond2_RSICollapse || sellCond3_MACDCross || sellCond4_Resistance;
+  const isSellSignal = sellCond1_EMACross || sellCond2_RSICollapse || sellCond3_MACDCross || sellCond4_Resistance || sellCond5_AIBearish;
+
+  // Compile Detailed Sell Reasons for clear Telegram alert
+  const sellReasons = [];
+  if (sellCond1_EMACross) {
+    sellReasons.push({
+      title: 'EMA Death Cross (ট্রেন্ড পরিবর্তন)',
+      detail: `EMA 20 ($${currentEMA20.toFixed(1)}) EMA 50 ($${currentEMA50.toFixed(1)})-এর নিচে নেমে গেছে। আপট্রেন্ড শেষ হওয়ার নিশ্চিত সংকেত।`
+    });
+  }
+  if (sellCond2_RSICollapse) {
+    sellReasons.push({
+      title: 'RSI মোমেন্টাম ক্র্যাশ',
+      detail: `RSI ওভারবট জোন (${prevRSI.toFixed(1)}) থেকে নিচে নেমে ${currentRSI.toFixed(1)}-এ এসেছে। বায়ারদের দম শেষ।`
+    });
+  }
+  if (sellCond3_MACDCross) {
+    sellReasons.push({
+      title: 'MACD বিয়ারিশ ক্রসওভার',
+      detail: `MACD লাইন সিগন্যাল লাইনের নিচে চলে গেছে। সেলাররা বাজারে তীব্র নিয়ন্ত্রণ নিয়েছে।`
+    });
+  }
+  if (sellCond4_Resistance) {
+    sellReasons.push({
+      title: 'রেজিস্ট্যান্স থেকে শক্তিশালী রিজেকশন',
+      detail: `$${resistance ? resistance.toFixed(1) : 'N/A'} রেজিস্ট্যান্সে ধাক্কা খেয়ে রিজেকশন ক্যান্ডেল তৈরি হয়েছে।`
+    });
+  }
+  if (sellCond5_AIBearish) {
+    sellReasons.push({
+      title: 'AI মার্কেট স্কোর নেতিবাচক (Score: ' + aiAnalysis.score + '/100)',
+      detail: 'AI অ্যালগরিদম বাজারে উচ্চ ঝুঁকির বিয়ারিশ প্রেসার শনাক্ত করেছে।'
+    });
+  }
 
   return {
     candleTime: currentCandle.openTime,
@@ -132,23 +165,15 @@ function evaluateStrategy(candles, config) {
     low: currentCandle.low,
     volume: currentVol,
     avgVolume: avgVol,
-    indicators: {
-      ema20: currentEMA20,
-      ema50: currentEMA50,
-      rsi: currentRSI,
-      prevRSI: prevRSI,
-      macd: currentMACD.macd,
-      signal: currentMACD.signal,
-      histogram: currentMACD.histogram,
-      support,
-      resistance
-    },
+    indicators,
+    aiAnalysis,
     buyConditions: {
       trendAligned: buyCond1_Trend,
       rsiInOptimalZone: buyCond2_RSI,
       macdBullishExpanding: buyCond3_MACD,
       volumeConfirmed: buyCond4_Volume,
       supportBounce: buyCond5_Support,
+      aiConfidenceHigh: buyCond6_AIScore,
       allMatched: isBuySignal
     },
     sellConditions: {
@@ -156,7 +181,9 @@ function evaluateStrategy(candles, config) {
       rsiOverboughtCollapse: sellCond2_RSICollapse,
       macdBearishCross: sellCond3_MACDCross,
       resistanceRejection: sellCond4_Resistance,
-      anyMatched: isSellSignal
+      aiBearish: sellCond5_AIBearish,
+      anyMatched: isSellSignal,
+      sellReasons
     }
   };
 }
