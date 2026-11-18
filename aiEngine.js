@@ -1,10 +1,11 @@
 /**
  * Autonomous AI Trading Intelligence & Strategy Evolution Engine (aiEngine.js)
- * Features:
- * 1. Market Regime Detection (Trend, Chop, Volatile Breakout)
- * 2. Self-Evolving Dynamic Strategy Adaptation (Auto-updates rules, SL/TP, and weights)
- * 3. Multi-Position Scaling-In (Pyramiding into high-probability trend continuations)
- * 4. Dynamic Risk & Bankroll Allocation
+ * Supports:
+ * 1. Multi-Coin Market Regime Detection
+ * 2. Risk Profiles (Low, Mid, High)
+ * 3. Self-Evolving Dynamic Strategy Adaptation
+ * 4. Multi-Position Scaling-In (Pyramiding)
+ * 5. Dynamic Risk & Bankroll Allocation
  */
 
 function detectMarketRegime(price, indicators, volume, avgVolume) {
@@ -21,7 +22,7 @@ function detectMarketRegime(price, indicators, volume, avgVolume) {
   if (ema20 > ema50 && price > ema20 && emaDiffPct > 0.25 && rsi > 52) {
     return {
       regime: 'STRONG_BULL_TREND',
-      regimeName: 'বুলিশ ট্রেন্ড (শক্তিশালী আপট্রেন্ড) 🚀',
+      regimeName: 'বুলিশ ট্রেন্ড (আপট্রেন্ড) 🚀',
       bias: 'BULLISH',
       trendScore: 85,
       volatility: atrPct > 1.2 ? 'HIGH' : 'NORMAL',
@@ -65,66 +66,71 @@ function detectMarketRegime(price, indicators, volume, avgVolume) {
 }
 
 /**
- * Self-Evolving Strategy Engine
- * Evaluates market regime and recent win-loss performance to dynamically evolve strategy parameters.
+ * Self-Evolving Strategy Engine with AI Risk Profile Alignment
  */
-function evolveStrategyEngine(currentEvolved, regime, tradeHistory = []) {
+function evolveStrategyEngine(currentEvolved, regime, tradeHistory = [], aiProfile = null) {
+  const baseThreshold = aiProfile?.confidenceThreshold || currentEvolved?.confidenceThreshold || 68;
+  const baseRsiMin = aiProfile?.rsiBuyMin || currentEvolved?.rsiBuyMin || 48;
+  const baseRsiMax = aiProfile?.rsiBuyMax || currentEvolved?.rsiBuyMax || 68;
+  const baseVol = aiProfile?.volumeMultiplier || currentEvolved?.volumeMultiplier || 0.95;
+  const baseMaxPos = aiProfile?.maxPositions || currentEvolved?.maxPositions || 2;
+  const baseScaling = aiProfile?.allowScalingIn ?? currentEvolved?.allowScalingIn ?? true;
+  const baseAtrSL = aiProfile?.slMultiplierATR || currentEvolved?.atrMultiplierSL || 1.4;
+  const baseRR = aiProfile?.rrTarget || currentEvolved?.riskRewardTarget || 2.5;
+
   const evolved = {
     generation: currentEvolved?.generation || 1,
-    activeStyle: 'AI_ADAPTIVE_TREND',
-    confidenceThreshold: currentEvolved?.confidenceThreshold || 68,
-    rsiBuyMin: currentEvolved?.rsiBuyMin || 48,
-    rsiBuyMax: currentEvolved?.rsiBuyMax || 68,
-    atrMultiplierSL: currentEvolved?.atrMultiplierSL || 1.4,
-    riskRewardTarget: currentEvolved?.riskRewardTarget || 2.5,
-    volumeMultiplier: currentEvolved?.volumeMultiplier || 0.95,
-    maxPositions: 3,
-    allowScalingIn: true,
+    activeStyle: aiProfile?.name || currentEvolved?.activeStyle || 'AI_ADAPTIVE_TREND',
+    confidenceThreshold: baseThreshold,
+    rsiBuyMin: baseRsiMin,
+    rsiBuyMax: baseRsiMax,
+    atrMultiplierSL: baseAtrSL,
+    minSLPct: aiProfile?.minSLPct || 0.8,
+    maxSLPct: aiProfile?.maxSLPct || 2.5,
+    riskRewardTarget: baseRR,
+    volumeMultiplier: baseVol,
+    maxPositions: baseMaxPos,
+    allowScalingIn: baseScaling,
     lastAdaptedAt: Date.now(),
     adaptationLog: ''
   };
 
   const logs = [];
 
-  // --- 1. Adapt Based on Market Regime ---
+  // 1. Adapt Based on Market Regime
   if (regime.regime === 'STRONG_BULL_TREND') {
-    evolved.activeStyle = 'AGGRESSIVE_TREND_FOLLOWING 🚀';
-    evolved.allowScalingIn = true;
-    evolved.maxPositions = 3;
-    evolved.riskRewardTarget = 2.8; // wider targets in trend
-    evolved.rsiBuyMax = 72; // allow riding stronger momentum
-    logs.push('মার্কেট শক্তিশালী আপট্রেন্ডে থাকায় AI মাল্টি-ট্রেড স্কেলিং ও বড় টার্গেট (1:2.8 RR) সক্রিয় করেছে।');
+    evolved.activeStyle = `${aiProfile?.badge || 'AI'} • TREND_FOLLOWING 🚀`;
+    evolved.allowScalingIn = baseScaling;
+    evolved.maxPositions = baseMaxPos;
+    evolved.riskRewardTarget = Math.max(baseRR, 2.6);
+    evolved.rsiBuyMax = Math.min(76, baseRsiMax + 4);
+    logs.push('মার্কেট আপট্রেন্ডে থাকায় AI বড় টার্গেট ও ট্রেন্ড স্কেলিং সক্রিয় রেখেছে।');
   } else if (regime.regime === 'RANGING_CHOP') {
-    evolved.activeStyle = 'DEFENSIVE_RANGE_SCALPING 🛡️';
-    evolved.allowScalingIn = false; // No pyramiding in chop
-    evolved.maxPositions = 1;
-    evolved.riskRewardTarget = 1.8; // quick targets in chop
-    evolved.rsiBuyMin = 46;
-    evolved.rsiBuyMax = 62;
-    logs.push('মার্কেট সাইডওয়েজে থাকায় AI রক্ষণাত্মক মোডে গেছে: স্কেলিং বন্ধ এবং দ্রুত প্রফিট লক (1:1.8 RR)।');
-  } else if (regime.regime === 'STRONG_BEAR_TREND') {
-    evolved.activeStyle = 'CAPITAL_PRESERVATION_MODE 🔒';
+    evolved.activeStyle = `${aiProfile?.badge || 'AI'} • DEFENSIVE_SCALPING 🛡️`;
     evolved.allowScalingIn = false;
     evolved.maxPositions = 1;
-    evolved.confidenceThreshold = 75; // higher bar for entries
-    logs.push('ডাউনট্রেন্ডের কারণে AI এন্ট্রি ফিল্টার কঠোর করেছে (Confidence 75%+)।');
+    evolved.riskRewardTarget = Math.min(baseRR, 2.0);
+    logs.push('মার্কেট সাইডওয়েজে থাকায় AI রক্ষণাত্মক মোডে গেছে: স্কেলিং বন্ধ ও দ্রুত প্রফিট লক।');
+  } else if (regime.regime === 'STRONG_BEAR_TREND') {
+    evolved.activeStyle = `${aiProfile?.badge || 'AI'} • CAPITAL_PRESERVATION 🔒`;
+    evolved.allowScalingIn = false;
+    evolved.maxPositions = 1;
+    evolved.confidenceThreshold = Math.min(85, baseThreshold + 6);
+    logs.push('ডাউনট্রেন্ডের কারণে AI এন্ট্রি ফিল্টার কঠোর করেছে।');
   }
 
-  // --- 2. Adapt Based on Performance History (Evolution Loop) ---
+  // 2. Adapt Based on Performance History
   if (tradeHistory.length >= 3) {
     const recent = tradeHistory.slice(-5);
     const wins = recent.filter(t => t.isWin).length;
     const winRate = (wins / recent.length) * 100;
 
-    // Drawdown protection
     if (winRate < 40) {
-      evolved.confidenceThreshold = Math.min(78, evolved.confidenceThreshold + 4);
-      evolved.volumeMultiplier = 1.1; // demand higher volume
-      logs.push(`সাম্প্রতিক পারফরম্যান্স কম হওয়ায় (${winRate.toFixed(0)}% উইন রেট) AI আরও সতর্ক হয়ে ভলিউম শর্ত বাড়িয়েছে।`);
+      evolved.confidenceThreshold = Math.min(82, evolved.confidenceThreshold + 3);
+      logs.push(`সাম্প্রতিক উইন রেট (${winRate.toFixed(0)}%) কম হওয়ায় AI আরও সতর্ক হয়েছে।`);
     } else if (winRate >= 75) {
       evolved.generation = (currentEvolved?.generation || 1) + 1;
-      evolved.confidenceThreshold = Math.max(62, evolved.confidenceThreshold - 2);
-      logs.push(`চমৎকার পারফরম্যান্সের কারণে (${winRate.toFixed(0)}% উইন রেট) AI স্ট্র্যাটেজি জেনারেশন #${evolved.generation}-এ উন্নীত হয়েছে! 🎉`);
+      logs.push(`চমৎকার উইন রেটের (${winRate.toFixed(0)}%) কারণে AI স্ট্র্যাটেজি Gen #${evolved.generation}-এ উন্নীত হয়েছে! 🎉`);
     }
   }
 
@@ -133,10 +139,10 @@ function evolveStrategyEngine(currentEvolved, regime, tradeHistory = []) {
 }
 
 /**
- * Check if the AI should scale-in / take an ADDITIONAL trade while inside an active trade
+ * Check if the AI should scale-in / take an ADDITIONAL trade
  */
 function shouldScaleIntoPosition(activeTrades = [], currentPrice, aiAnalysis, walletBalance, evolvedStrategy) {
-  const maxAllowed = evolvedStrategy?.maxPositions || 3;
+  const maxAllowed = evolvedStrategy?.maxPositions || 2;
   if (!evolvedStrategy?.allowScalingIn || activeTrades.length >= maxAllowed) {
     return { canScale: false, reason: 'সর্বোচ্চ পজিশন লিমিট বা স্কেলিং অফ' };
   }
@@ -145,29 +151,22 @@ function shouldScaleIntoPosition(activeTrades = [], currentPrice, aiAnalysis, wa
     return { canScale: false, reason: 'কোনো মূল পজিশন খোলা নেই' };
   }
 
-  // Minimum remaining wallet balance required for another trade
   const tradeSize = aiAnalysis.allocation?.suggestedAmountUSD || 5.0;
   if (walletBalance < tradeSize) {
     return { canScale: false, reason: 'অপর্যাপ্ত ব্যালেন্স' };
   }
 
-  // Check the health of existing positions
-  // Pyramiding rule: The latest open trade SHOULD be in profit or at least at breakeven!
   const latestTrade = activeTrades[activeTrades.length - 1];
   const pnlPct = ((currentPrice - latestTrade.entryPrice) / latestTrade.entryPrice) * 100;
 
-  // Conditions to add position:
-  // 1. Existing trade is in profit (+0.4% or more)
-  // 2. AI Confidence is strong (>= 75)
-  // 3. Regime is Strong Bull Trend
   const isHealthyProfit = pnlPct >= 0.35;
-  const isBullishContinuation = aiAnalysis.score >= 74 && aiAnalysis.regime.regime === 'STRONG_BULL_TREND';
+  const isBullishContinuation = aiAnalysis.score >= 72 && aiAnalysis.regime.regime === 'STRONG_BULL_TREND';
 
   if (isHealthyProfit && isBullishContinuation) {
     return {
       canScale: true,
       positionIndex: activeTrades.length + 1,
-      reason: `পূর্বের ট্রেডে লাভ (+${pnlPct.toFixed(2)}%) এবং স্ট্রং বুলিশ কন্টিনিউয়েশন সিগন্যাল রয়েছে। AI দ্বিতীয় পজিশন স্কেল করছে।`,
+      reason: `পূর্বের ট্রেডে লাভ (+${pnlPct.toFixed(2)}%) এবং স্ট্রং বুলিশ কন্টিনিউয়েশন সিগন্যাল রয়েছে।`,
       suggestedAmountUSD: tradeSize
     };
   }
@@ -175,26 +174,29 @@ function shouldScaleIntoPosition(activeTrades = [], currentPrice, aiAnalysis, wa
   return { canScale: false, reason: 'স্কেলিংয়ের উপযুক্ত শর্ত পূরণ হয়নি' };
 }
 
-function calculateDynamicRiskReward(price, indicators, regime, evolvedStrategy = {}) {
+function calculateDynamicRiskReward(price, indicators, regime, evolvedStrategy = {}, aiProfile = null) {
   const { atr, support, resistance } = indicators;
   const atrVal = atr || price * 0.008;
-  const slMultiplier = evolvedStrategy.atrMultiplierSL || 1.4;
-  const rrTarget = evolvedStrategy.riskRewardTarget || 2.5;
+  const slMultiplier = evolvedStrategy.atrMultiplierSL || aiProfile?.slMultiplierATR || 1.4;
+  const rrTarget = evolvedStrategy.riskRewardTarget || aiProfile?.rrTarget || 2.5;
+
+  const minSL = aiProfile?.minSLPct || evolvedStrategy.minSLPct || 0.8;
+  const maxSL = aiProfile?.maxSLPct || evolvedStrategy.maxSLPct || 2.5;
 
   // 1. Dynamic Stop Loss
   let dynamicSLPct = (slMultiplier * atrVal / price) * 100;
-  dynamicSLPct = Math.max(0.8, Math.min(2.5, dynamicSLPct));
+  dynamicSLPct = Math.max(minSL, Math.min(maxSL, dynamicSLPct));
 
   if (support && price > support) {
     const supportDistancePct = ((price - support) / price) * 100;
-    if (supportDistancePct >= 0.5 && supportDistancePct <= 2.5) {
-      dynamicSLPct = Math.max(0.8, supportDistancePct + 0.25);
+    if (supportDistancePct >= 0.5 && supportDistancePct <= maxSL) {
+      dynamicSLPct = Math.max(minSL, supportDistancePct + 0.25);
     }
   }
 
   // 2. Dynamic Take Profit
   let dynamicTPPct = dynamicSLPct * rrTarget;
-  dynamicTPPct = Math.max(2.0, Math.min(15.0, dynamicTPPct));
+  dynamicTPPct = Math.max(1.8, Math.min(25.0, dynamicTPPct));
 
   const stopLossPrice = price * (1 - dynamicSLPct / 100);
   const takeProfitPrice = price * (1 + dynamicTPPct / 100);
@@ -208,17 +210,13 @@ function calculateDynamicRiskReward(price, indicators, regime, evolvedStrategy =
   };
 }
 
-function calculateDynamicAllocation(walletBalance, regime, confidenceScore, tradeHistory = []) {
-  let allocPct = 20.0;
+function calculateDynamicAllocation(walletBalance, regime, confidenceScore, tradeHistory = [], aiProfile = null) {
+  let allocPct = aiProfile?.allocationPct || 20.0;
 
-  if (regime.regime === 'STRONG_BULL_TREND' && confidenceScore >= 80) {
-    allocPct = 25.0;
-  } else if (confidenceScore >= 70) {
-    allocPct = 18.0;
-  } else if (confidenceScore >= 55) {
-    allocPct = 12.0;
-  } else {
-    allocPct = 0.0;
+  if (confidenceScore >= 80) {
+    allocPct = Math.min(35.0, allocPct * 1.15);
+  } else if (confidenceScore < 65) {
+    allocPct = Math.max(8.0, allocPct * 0.7);
   }
 
   if (tradeHistory.length >= 3) {
@@ -227,9 +225,9 @@ function calculateDynamicAllocation(walletBalance, regime, confidenceScore, trad
     const recentWinRate = (recentWins / recent.length) * 100;
 
     if (recentWinRate < 35) {
-      allocPct = Math.max(8.0, allocPct * 0.6);
+      allocPct = Math.max(6.0, allocPct * 0.6);
     } else if (recentWinRate >= 75 && allocPct > 0) {
-      allocPct = Math.min(30.0, allocPct * 1.15);
+      allocPct = Math.min(35.0, allocPct * 1.1);
     }
   }
 
@@ -242,7 +240,7 @@ function calculateDynamicAllocation(walletBalance, regime, confidenceScore, trad
   };
 }
 
-function analyzeMarketWithAI(candles, indicators, walletBalance, tradeHistory = [], currentEvolved = null) {
+function analyzeMarketWithAI(candles, indicators, walletBalance, tradeHistory = [], currentEvolved = null, aiProfile = null) {
   const targetIndex = candles.length - 1;
   const currentCandle = candles[targetIndex];
   const price = currentCandle.close;
@@ -251,7 +249,7 @@ function analyzeMarketWithAI(candles, indicators, walletBalance, tradeHistory = 
   const regime = detectMarketRegime(price, indicators, currentCandle.volume, indicators.avgVolume || currentCandle.volume);
 
   // 2. Self-Evolve Strategy Rules
-  const evolvedStrategy = evolveStrategyEngine(currentEvolved, regime, tradeHistory);
+  const evolvedStrategy = evolveStrategyEngine(currentEvolved, regime, tradeHistory, aiProfile);
 
   // 3. Compute AI Confidence Score
   let score = 50;
@@ -267,11 +265,11 @@ function analyzeMarketWithAI(candles, indicators, walletBalance, tradeHistory = 
 
   if (indicators.rsi >= evolvedStrategy.rsiBuyMin && indicators.rsi <= evolvedStrategy.rsiBuyMax) {
     score += 15;
-    reasons.push(`RSI অপ্টিমাল মোমেন্টাম রেঞ্জে (${evolvedStrategy.rsiBuyMin}-${evolvedStrategy.rsiBuyMax}) রয়েছে (+15%)`);
-  } else if (indicators.rsi > 72) {
+    reasons.push(`RSI অপ্টিমাল রেঞ্জে (${evolvedStrategy.rsiBuyMin}-${evolvedStrategy.rsiBuyMax}) রয়েছে (+15%)`);
+  } else if (indicators.rsi > 74) {
     score -= 15;
-    reasons.push('RSI অতিরিক্ত ওভারবট (72+), রিভার্সালের ঝুঁকি (-15%)');
-  } else if (indicators.rsi < 40) {
+    reasons.push('RSI অতিরিক্ত ওভারবট (74+), রিভার্সালের ঝুঁকি (-15%)');
+  } else if (indicators.rsi < 38) {
     score -= 15;
     reasons.push('RSI দুর্বল বিয়ারিশ মোমেন্টামে (-15%)');
   }
@@ -291,17 +289,18 @@ function analyzeMarketWithAI(candles, indicators, walletBalance, tradeHistory = 
 
   score = Math.max(5, Math.min(95, score));
 
-  // 4. Dynamic SL/TP based on evolved parameters
-  const riskReward = calculateDynamicRiskReward(price, indicators, regime, evolvedStrategy);
+  // 4. Dynamic SL/TP based on evolved parameters and AI Risk Profile
+  const riskReward = calculateDynamicRiskReward(price, indicators, regime, evolvedStrategy, aiProfile);
 
   // 5. Dynamic Allocation
-  const allocation = calculateDynamicAllocation(walletBalance, regime, score, tradeHistory);
+  const allocation = calculateDynamicAllocation(walletBalance, regime, score, tradeHistory, aiProfile);
 
   // 6. Action Stance
   let aiStance = 'HOLD / WAIT';
   let stanceEmoji = '⏸️';
 
-  if (score >= evolvedStrategy.confidenceThreshold && regime.bias === 'BULLISH') {
+  const threshold = evolvedStrategy.confidenceThreshold || 68;
+  if (score >= threshold && regime.bias === 'BULLISH') {
     aiStance = 'STRONG BUY';
     stanceEmoji = '🟢';
   } else if (score <= 35 || regime.bias === 'BEARISH') {

@@ -8,11 +8,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const { getAIProfile, AI_PROFILES } = require('./aiProfiles');
 
 const DB_PATH = path.join(__dirname, 'paper_trades.json');
 
 function loadState() {
   const defaultState = {
+    activeAIModel: 'MID_RISK',
     wallet: {
       balance: 40.0,
       initialBalance: 30.0
@@ -22,7 +24,7 @@ function loadState() {
       tradeAmountUSD: 10.0,
       stopLossPct: 1.0,
       takeProfitPct: 30.0,
-      maxPositions: 3,
+      maxPositions: 2,
       allowScalingIn: true,
       exitOnSellSignal: true
     },
@@ -33,9 +35,9 @@ function loadState() {
       rsiBuyMin: 48,
       rsiBuyMax: 68,
       atrMultiplierSL: 1.4,
-      riskRewardTarget: 2.5,
+      riskRewardTarget: 2.6,
       volumeMultiplier: 0.95,
-      maxPositions: 3,
+      maxPositions: 2,
       allowScalingIn: true,
       lastAdaptedAt: Date.now(),
       adaptationLog: 'প্রাথমিক AI মডেল সক্রিয়।'
@@ -61,6 +63,7 @@ function loadState() {
       }
 
       return {
+        activeAIModel: parsed.activeAIModel || 'MID_RISK',
         wallet: { ...defaultState.wallet, ...(parsed.wallet || {}) },
         settings: { ...defaultState.settings, ...(parsed.settings || {}) },
         evolvedStrategy: { ...defaultState.evolvedStrategy, ...(parsed.evolvedStrategy || {}) },
@@ -89,8 +92,39 @@ function getSettingsAndWallet() {
     settings: state.settings,
     evolvedStrategy: state.evolvedStrategy,
     activeTrades: state.activeTrades,
-    stats: state.stats
+    stats: state.stats,
+    activeAIModel: state.activeAIModel || 'MID_RISK'
   };
+}
+
+function getActiveAIModel() {
+  const state = loadState();
+  return state.activeAIModel || 'MID_RISK';
+}
+
+function switchAIModel(modelKey) {
+  const state = loadState();
+  const profile = getAIProfile(modelKey);
+  state.activeAIModel = profile.id;
+  state.settings.maxPositions = profile.maxPositions;
+
+  if (state.evolvedStrategy) {
+    state.evolvedStrategy.maxPositions = profile.maxPositions;
+    state.evolvedStrategy.allowScalingIn = profile.allowScalingIn;
+    state.evolvedStrategy.confidenceThreshold = profile.confidenceThreshold;
+    state.evolvedStrategy.rsiBuyMin = profile.rsiBuyMin;
+    state.evolvedStrategy.rsiBuyMax = profile.rsiBuyMax;
+    state.evolvedStrategy.atrMultiplierSL = profile.slMultiplierATR;
+    state.evolvedStrategy.riskRewardTarget = profile.rrTarget;
+    state.evolvedStrategy.volumeMultiplier = profile.volumeMultiplier;
+    state.evolvedStrategy.activeStyle = profile.badge;
+    state.evolvedStrategy.adaptationLog = `AI মডেল পরিবর্তন: ${profile.name} সক্রিয় করা হয়েছে।`;
+    state.evolvedStrategy.lastAdaptedAt = Date.now();
+  }
+
+  saveState(state);
+  console.log(`[PaperTrading] Switched active AI model to: ${profile.name}`);
+  return profile;
 }
 
 function updateWalletBalance(amount) {
@@ -134,7 +168,24 @@ function saveEvolvedStrategy(evolved) {
   saveState(state);
 }
 
-function openTrade(entryPrice, candleTime, aiAnalysis = null, isScaleIn = false) {
+function openTrade(arg1, arg2, arg3, arg4, arg5) {
+  let symbol = 'BTCUSDT';
+  let entryPrice, candleTime, aiAnalysis, isScaleIn;
+
+  if (typeof arg1 === 'string') {
+    symbol = arg1.toUpperCase().replace('/', '');
+    entryPrice = parseFloat(arg2);
+    candleTime = arg3;
+    aiAnalysis = arg4 || null;
+    isScaleIn = !!arg5;
+  } else {
+    symbol = 'BTCUSDT';
+    entryPrice = parseFloat(arg1);
+    candleTime = arg2;
+    aiAnalysis = arg3 || null;
+    isScaleIn = !!arg4;
+  }
+
   const state = loadState();
   const maxPositions = state.evolvedStrategy?.maxPositions || state.settings?.maxPositions || 3;
 
@@ -169,6 +220,7 @@ function openTrade(entryPrice, candleTime, aiAnalysis = null, isScaleIn = false)
 
   const newTrade = {
     id: (state.stats.totalTrades || 0) + state.activeTrades.length + 1,
+    symbol,
     positionNumber: state.activeTrades.length + 1,
     isScaleIn,
     entryTime: candleTime || Date.now(),
@@ -185,11 +237,24 @@ function openTrade(entryPrice, candleTime, aiAnalysis = null, isScaleIn = false)
   state.activeTrades.push(newTrade);
   saveState(state);
 
-  console.log(`[PaperTrading] Opened Position #${newTrade.positionNumber} ($${tradeAmountUSD} ${isAIMode ? 'AI' : 'MANUAL'}) at $${entryPrice.toFixed(2)} | SL: $${stopLossPrice.toFixed(2)} (-${stopLossPct}%) | TP: $${takeProfitPrice.toFixed(2)} (+${takeProfitPct}%)`);
+  console.log(`[PaperTrading] Opened ${symbol} Position #${newTrade.positionNumber} ($${tradeAmountUSD} ${isAIMode ? 'AI' : 'MANUAL'}) at $${entryPrice.toFixed(2)} | SL: $${stopLossPrice.toFixed(2)} (-${stopLossPct}%) | TP: $${takeProfitPrice.toFixed(2)} (+${takeProfitPct}%)`);
   return { trade: newTrade, wallet: state.wallet, totalActive: state.activeTrades.length };
 }
 
-function checkLiveTrade(livePrice, sellSignalTriggered = false) {
+function checkLiveTrade(arg1, arg2, arg3 = false) {
+  let filterSymbol = null;
+  let livePrice = 0;
+  let sellSignalTriggered = false;
+
+  if (typeof arg1 === 'string') {
+    filterSymbol = arg1.toUpperCase().replace('/', '');
+    livePrice = parseFloat(arg2);
+    sellSignalTriggered = !!arg3;
+  } else {
+    livePrice = parseFloat(arg1);
+    sellSignalTriggered = !!arg2;
+  }
+
   const state = loadState();
   if (!state.activeTrades || state.activeTrades.length === 0) return null;
 
@@ -197,6 +262,13 @@ function checkLiveTrade(livePrice, sellSignalTriggered = false) {
   const remainingTrades = [];
 
   for (const trade of state.activeTrades) {
+    const tradeSym = (trade.symbol || 'BTCUSDT').toUpperCase().replace('/', '');
+    // If filterSymbol is specified and does not match this trade, keep it in remaining
+    if (filterSymbol && tradeSym !== filterSymbol) {
+      remainingTrades.push(trade);
+      continue;
+    }
+
     let closeReason = null;
     let exitPrice = livePrice;
 
@@ -243,7 +315,7 @@ function checkLiveTrade(livePrice, sellSignalTriggered = false) {
       state.stats.winRatePct = (state.stats.wins / state.stats.totalTrades) * 100;
 
       closedTrades.push(closed);
-      console.log(`[PaperTrading] Closed Position #${trade.positionNumber} (${closeReason}) at $${exitPrice.toFixed(2)} | PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% (${pnlUSD >= 0 ? '+' : ''}$${pnlUSD.toFixed(3)}) | Wallet: $${state.wallet.balance.toFixed(2)}`);
+      console.log(`[PaperTrading] Closed ${trade.symbol || 'BTC'} Position #${trade.positionNumber} (${closeReason}) at $${exitPrice.toFixed(2)} | PnL: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}% (${pnlUSD >= 0 ? '+' : ''}$${pnlUSD.toFixed(3)}) | Wallet: $${state.wallet.balance.toFixed(2)}`);
     } else {
       remainingTrades.push(trade);
     }
@@ -292,6 +364,8 @@ module.exports = {
   getActiveTrades,
   getActiveTrade,
   getSettingsAndWallet,
+  getActiveAIModel,
+  switchAIModel,
   updateWalletBalance,
   updateTradeAmount,
   updateStopLossPct,

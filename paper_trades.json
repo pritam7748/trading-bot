@@ -1,4 +1,5 @@
 {
+  "activeAIModel": "HIGH_RISK",
   "wallet": {
     "balance": 40,
     "initialBalance": 30
@@ -14,17 +15,19 @@
   },
   "evolvedStrategy": {
     "generation": 1,
-    "activeStyle": "DEFENSIVE_RANGE_SCALPING 🛡️",
-    "confidenceThreshold": 68,
-    "rsiBuyMin": 46,
-    "rsiBuyMax": 62,
-    "atrMultiplierSL": 1.4,
-    "riskRewardTarget": 1.8,
-    "volumeMultiplier": 0.95,
+    "activeStyle": "HIGH RISK 🚀 • CAPITAL_PRESERVATION 🔒",
+    "confidenceThreshold": 66,
+    "rsiBuyMin": 44,
+    "rsiBuyMax": 74,
+    "atrMultiplierSL": 1.8,
+    "riskRewardTarget": 3.2,
+    "volumeMultiplier": 0.85,
     "maxPositions": 1,
     "allowScalingIn": false,
-    "lastAdaptedAt": 1794920558264,
-    "adaptationLog": "মার্কেট সাইডওয়েজে থাকায় AI রক্ষণাত্মক মোডে গেছে: স্কেলিং বন্ধ এবং দ্রুত প্রফিট লক (1:1.8 RR)।"
+    "lastAdaptedAt": 1795012870256,
+    "adaptationLog": "ডাউনট্রেন্ডের কারণে AI এন্ট্রি ফিল্টার কঠোর করেছে।",
+    "minSLPct": 1.5,
+    "maxSLPct": 3.5
   },
   "activeTrades": [],
   "history": [],

@@ -14,7 +14,7 @@ const {
 
 const { analyzeMarketWithAI } = require('./aiEngine');
 
-function evaluateStrategy(candles, config, walletBalance = 30, tradeHistory = [], currentEvolved = null) {
+function evaluateStrategy(candles, config, walletBalance = 30, tradeHistory = [], currentEvolved = null, aiProfile = null) {
   const lookback = config.strategy.lookbackSupportResistance || 20;
   const tolerancePct = (config.strategy.tolerancePct || 0.4) / 100;
 
@@ -74,8 +74,8 @@ function evaluateStrategy(candles, config, walletBalance = 30, tradeHistory = []
     avgVolume: avgVol
   };
 
-  // Run AI Engine Analysis with Strategy Evolution
-  const aiAnalysis = analyzeMarketWithAI(candles, indicators, walletBalance, tradeHistory, currentEvolved);
+  // Run AI Engine Analysis with Strategy Evolution and AI Risk Profile
+  const aiAnalysis = analyzeMarketWithAI(candles, indicators, walletBalance, tradeHistory, currentEvolved, aiProfile);
   const evolved = aiAnalysis.evolvedStrategy;
 
   // Dynamic Support Bounce Check
@@ -94,12 +94,12 @@ function evaluateStrategy(candles, config, walletBalance = 30, tradeHistory = []
   const isResistanceRejection = touchedResistance && closedBelowResistance && isBearishRejection;
 
   // ==========================================
-  // 🟢 OPTIMIZED BUY CONDITIONS (AI-ADAPTED THRESHOLDS)
+  // 🟢 OPTIMIZED BUY CONDITIONS (AI RISK PROFILE & EVOLVED THRESHOLDS)
   // ==========================================
-  const rsiMin = evolved?.rsiBuyMin || config.strategy.rsiBuyMin || 48;
-  const rsiMax = evolved?.rsiBuyMax || config.strategy.rsiBuyMax || 68;
-  const volMult = evolved?.volumeMultiplier || config.strategy.volumeMultiplier || 0.95;
-  const confidenceBar = evolved?.confidenceThreshold || 65;
+  const rsiMin = aiProfile?.rsiBuyMin || evolved?.rsiBuyMin || config.strategy?.rsiBuyMin || 48;
+  const rsiMax = aiProfile?.rsiBuyMax || evolved?.rsiBuyMax || config.strategy?.rsiBuyMax || 68;
+  const volMult = aiProfile?.volumeMultiplier || evolved?.volumeMultiplier || config.strategy?.volumeMultiplier || 0.95;
+  const confidenceBar = aiProfile?.confidenceThreshold || evolved?.confidenceThreshold || 65;
 
   const buyCond1_Trend = currentEMA20 !== null && currentEMA50 !== null && currentEMA20 > currentEMA50 && currentCandle.close >= currentEMA20;
   const buyCond2_RSI = currentRSI !== null && currentRSI >= rsiMin && currentRSI <= rsiMax && currentRSI >= (prevRSI || 0);

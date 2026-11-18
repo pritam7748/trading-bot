@@ -1,20 +1,23 @@
 /**
- * BTC 15m Scalping Alert Bot with Autonomous AI Market Intelligence
- * Monitors BTC 15m candles, detects market regimes, executes smart simulated trades,
- * and broadcasts alerts & rich analytics to Telegram subscribers.
+ * Multi-Coin Scalping & Research Bot with Autonomous AI Risk Profiles
+ * Supports:
+ * - 3 AI Risk Models (Low Risk, Mid Risk, High Risk)
+ * - Deep Multi-Coin Scanning & Research across BTC, ETH, SOL, BNB, XRP, DOGE, PEPE, SUI, etc.
+ * - Dynamic Telegram Model Switching (/aimodel low|mid|high, /models)
+ * - Live Multi-Coin Research Reports (/scan)
+ * - Autonomous Strategy Self-Evolution, ATR SL/TP, and Multi-Position Pyramiding
+ * - Render.com Web Service Port Binding (Port 10000)
  */
 
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const { evaluateStrategy } = require('./strategy');
 const {
   broadcastTelegramAlert,
   startTelegramListener,
   formatStartupMessage,
   formatBuyMessage,
   formatSellMessage,
-  formatTradeOpenedMessage,
   formatTradeClosedMessage
 } = require('./telegram');
 const {
@@ -23,10 +26,13 @@ const {
   getActiveTrades,
   getActiveTrade,
   getSettingsAndWallet,
+  getActiveAIModel,
   saveEvolvedStrategy,
   loadState
 } = require('./paperTrading');
 const { shouldScaleIntoPosition } = require('./aiEngine');
+const { getAIProfile } = require('./aiProfiles');
+const { scanMarketCoins, formatScanReport, fetchCandles } = require('./marketScanner');
 
 const CONFIG_PATH = path.join(__dirname, 'config.json');
 
@@ -40,221 +46,207 @@ function loadConfig() {
   }
 }
 
-// Fetch candles with fallback support
-async function fetchCandles(symbol = 'BTCUSDT', interval = '15m') {
-  const binanceHosts = [
-    'https://api.binance.com',
-    'https://data-api.binance.vision',
-    'https://api1.binance.com'
-  ];
-
-  for (const host of binanceHosts) {
-    try {
-      const url = `${host}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=100`;
-      const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(6000) });
-      if (res.ok) {
-        const data = await res.json();
-        return data.map(item => ({
-          openTime: item[0],
-          open: parseFloat(item[1]),
-          high: parseFloat(item[2]),
-          low: parseFloat(item[3]),
-          close: parseFloat(item[4]),
-          volume: parseFloat(item[5]),
-          closeTime: item[6]
-        }));
-      }
-    } catch (_) {}
-  }
-
-  // Fallback to Bybit
-  try {
-    const bybitInterval = interval === '15m' ? '15' : interval === '1h' ? '60' : '15';
-    const bybitUrl = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${bybitInterval}&limit=100`;
-    const res = await fetch(bybitUrl, { signal: AbortSignal.timeout(6000) });
-    if (res.ok) {
-      const json = await res.json();
-      if (json.result && json.result.list) {
-        const list = json.result.list.slice().reverse();
-        return list.map(item => ({
-          openTime: parseInt(item[0]),
-          open: parseFloat(item[1]),
-          high: parseFloat(item[2]),
-          low: parseFloat(item[3]),
-          close: parseFloat(item[4]),
-          volume: parseFloat(item[5]),
-          closeTime: parseInt(item[0]) + (15 * 60 * 1000 - 1)
-        }));
-      }
-    }
-  } catch (_) {}
-
-  throw new Error('All exchange candle endpoints failed. Please check network connection.');
-}
-
-let lastEvaluatedCandleTime = null;
 let latestMarketSnapshot = null;
+let isScanInProgress = false;
 
 function getLatestStatusMessage() {
   if (!latestMarketSnapshot) return null;
   const config = loadConfig();
   return {
-    message: formatStartupMessage(latestMarketSnapshot, config.symbol, config.interval),
+    message: formatStartupMessage(latestMarketSnapshot, config.symbol || 'BTCUSDT', config.interval || '15m'),
     rawResult: latestMarketSnapshot
   };
 }
 
-async function checkMarket(isStartup = false) {
+async function runScanResearch() {
   const config = loadConfig();
-  const { symbol, interval, telegram, paperTrading } = config;
-  const { wallet, settings } = getSettingsAndWallet();
+  const { wallet } = getSettingsAndWallet();
   const fullState = loadState();
+  const aiModelKey = getActiveAIModel();
+  const aiProfile = getAIProfile(aiModelKey);
+
+  console.log(`\n🔍 [Manual /scan Triggered] Researching ${aiProfile.symbols.length} coins with ${aiProfile.name}...`);
+  const scanResults = await scanMarketCoins(
+    aiProfile,
+    config,
+    wallet.balance,
+    fullState.history,
+    fullState.evolvedStrategy
+  );
+
+  return formatScanReport(scanResults, aiProfile);
+}
+
+async function checkMarket(isStartup = false) {
+  if (isScanInProgress) return;
+  isScanInProgress = true;
+
+  const config = loadConfig();
+  const { interval = '15m', telegram, paperTrading } = config;
+  const { wallet } = getSettingsAndWallet();
+  const fullState = loadState();
+  const aiModelKey = getActiveAIModel();
+  const aiProfile = getAIProfile(aiModelKey);
 
   try {
-    const rawCandles = await fetchCandles(symbol, interval);
-    if (!rawCandles || rawCandles.length < 52) {
-      console.log(`[${new Date().toLocaleTimeString()}] Waiting for candle history...`);
+    // 1. Deep Multi-Coin Research across all coins defined in active AI Profile
+    const scanResults = await scanMarketCoins(
+      aiProfile,
+      config,
+      wallet.balance,
+      fullState.history,
+      fullState.evolvedStrategy
+    );
+
+    if (!scanResults || scanResults.length === 0) {
+      console.log(`[${new Date().toLocaleTimeString()}] [${aiProfile.name}] Waiting for market candle data...`);
+      isScanInProgress = false;
       return;
     }
 
-    const closedCandles = rawCandles.slice(0, rawCandles.length - 1);
-    const lastClosedCandle = closedCandles[closedCandles.length - 1];
-    const liveCandle = rawCandles[rawCandles.length - 1];
+    // Identify BTC or top opportunity for status snapshot
+    const btcResult = scanResults.find(r => r.symbol === 'BTCUSDT') || scanResults[0];
+    latestMarketSnapshot = { ...btcResult.evalResult, price: btcResult.livePrice };
 
-    // --- 1. Real-time Multi-Position Paper Trade SL/TP Check ---
-    if (paperTrading?.enabled) {
-      const liveCloseEvent = checkLiveTrade(liveCandle.close, false);
-      if (liveCloseEvent && liveCloseEvent.closedTrades.length > 0) {
-        console.log(`\n🛑 >>> PAPER TRADE HIT TARGET/SL (${liveCloseEvent.closedTrades.map(t => t.reason).join(', ')})! BROADCASTING TELEGRAM ALERT <<<`);
-        const msg = formatTradeClosedMessage(liveCloseEvent.closedTrades, liveCloseEvent.stats, liveCloseEvent.wallet, symbol);
-        await broadcastTelegramAlert(telegram.botToken, msg);
-      }
+    // Persist newly evolved strategy rules if any
+    if (btcResult.evalResult?.aiAnalysis?.evolvedStrategy) {
+      saveEvolvedStrategy(btcResult.evalResult.aiAnalysis.evolvedStrategy);
     }
 
-    // Evaluate strategy with AI Engine & Self-Evolution
-    const result = evaluateStrategy(closedCandles, config, wallet.balance, fullState.history, fullState.evolvedStrategy);
-    if (result.error) return;
-
-    // Persist newly evolved strategy rules
-    if (result.aiAnalysis?.evolvedStrategy) {
-      saveEvolvedStrategy(result.aiAnalysis.evolvedStrategy);
-    }
-
-    latestMarketSnapshot = { ...result, price: liveCandle.close };
-    const { indicators, buyConditions, sellConditions, price, aiAnalysis } = result;
-
-    // Send startup welcome message if this is the initial run
+    // 2. Broadcast startup notification on initial run
     if (isStartup) {
-      console.log('[Startup] Broadcasting initial AI market snapshot to all subscribers...');
-      const startupMsg = formatStartupMessage(latestMarketSnapshot, symbol, interval);
+      console.log(`[Startup] Broadcasting initial ${aiProfile.name} multi-coin market snapshot to subscribers...`);
+      const startupMsg = formatStartupMessage(latestMarketSnapshot, btcResult.displayName, interval);
       await broadcastTelegramAlert(telegram.botToken, startupMsg);
     }
 
-    // Display Active Trades info in Console
-    const activeTrades = getActiveTrades();
-    let tradeStatusText = 'No Active Trades';
-    if (activeTrades.length > 0) {
-      tradeStatusText = `Positions: ${activeTrades.length}/3 (${activeTrades.map(t => {
-        const pnl = ((liveCandle.close - t.entryPrice) / t.entryPrice) * 100;
-        return `#${t.positionNumber}: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%`;
-      }).join(' | ')})`;
-    }
+    // 3. Evaluate each researched cryptocurrency
+    const maxPositionsAllowed = aiProfile.maxPositions;
 
-    const statusLine = `[${new Date().toLocaleTimeString()}] Live: $${liveCandle.close.toFixed(1)} | AI Score: ${aiAnalysis?.score}/100 | Stance: ${aiAnalysis?.aiStance} | ${tradeStatusText}`;
-    process.stdout.write(`\r${statusLine}`);
+    for (const coinData of scanResults) {
+      const { symbol, displayName, livePrice, evalResult, buyConditions, sellConditions, aiAnalysis } = coinData;
 
-    // If this candle was already evaluated, wait for next candle close
-    if (lastEvaluatedCandleTime === lastClosedCandle.openTime) {
-      return;
-    }
-
-    console.log(`\n\n🔔 [New ${interval} Candle Closed at ${new Date(lastClosedCandle.closeTime).toLocaleTimeString()}] Evaluating Strategy & AI...`);
-
-    // --- 2. Check SELL / EXIT Signals ---
-    if (sellConditions.anyMatched) {
-      console.log('🚨 >>> SELL / EXIT SIGNAL DETECTED! BROADCASTING TELEGRAM ALERT <<<');
-      const msg = formatSellMessage(result, activeTrades, symbol, interval);
-      await broadcastTelegramAlert(telegram.botToken, msg);
-
-      // If active paper trades exist, close all positions on exit signal
-      if (paperTrading?.enabled && paperTrading?.exitOnSellSignal && activeTrades.length > 0) {
-        const exitEvent = checkLiveTrade(price, true);
-        if (exitEvent && exitEvent.closedTrades.length > 0) {
-          console.log(`🔔 >>> CLOSING ${exitEvent.closedTrades.length} PAPER TRADES DUE TO SELL SIGNAL <<<`);
-          const exitMsg = formatTradeClosedMessage(exitEvent.closedTrades, exitEvent.stats, exitEvent.wallet, symbol);
-          await broadcastTelegramAlert(telegram.botToken, exitMsg);
-        }
-      }
-    }
-
-    // --- 3. Check BUY / Scaling-In Signals ---
-    let shouldTrade = false;
-    let isScaleIn = false;
-
-    if (activeTrades.length === 0) {
-      if (buyConditions.allMatched) {
-        shouldTrade = true;
-        isScaleIn = false;
-      }
-    } else {
-      // Dynamic Multi-Position / Pyramiding Check
-      const scaleCheck = shouldScaleIntoPosition(activeTrades, price, aiAnalysis, wallet.balance, result.aiAnalysis?.evolvedStrategy);
-      if (scaleCheck.canScale) {
-        console.log(`⚡ AI Pyramiding Triggered: ${scaleCheck.reason}`);
-        shouldTrade = true;
-        isScaleIn = true;
-      }
-    }
-
-    if (shouldTrade) {
-      console.log(`🚀 >>> ${isScaleIn ? 'AI MULTI-POSITION SCALE-IN' : 'INITIAL BUY'} SIGNAL TRIGGERED! BROADCASTING TELEGRAM ALERT <<<`);
+      // 3A. Real-time Paper Trade SL/TP Check for this coin
       if (paperTrading?.enabled) {
-        const openResult = openTrade(price, lastClosedCandle.closeTime, aiAnalysis, isScaleIn);
-        if (openResult.error === 'INSUFFICIENT_BALANCE') {
-          console.log('⚠️ Insufficient balance to open trade.');
-          await broadcastTelegramAlert(telegram.botToken, `⚠️ *[ট্রেড স্কিপ] অপর্যাপ্ত ওয়ালেট ব্যালেন্স!*\nট্রেড নেওয়ার জন্য $${openResult.needed.toFixed(2)} USD প্রয়োজন, কিন্তু বর্তমান ব্যালেন্স $${openResult.balance.toFixed(2)} USD। ব্যালেন্স বাড়াতে \`/setbalance\` ব্যবহার করুন।`);
-        } else if (openResult.trade) {
-          console.log(`📥 >>> OPENED POSITION #${openResult.trade.positionNumber} (${openResult.trade.mode})! BROADCASTING TELEGRAM ALERT <<<`);
-          const tradeMsg = formatBuyMessage(result, openResult, symbol, interval);
-          await broadcastTelegramAlert(telegram.botToken, tradeMsg);
+        const liveCloseEvent = checkLiveTrade(symbol, livePrice, false);
+        if (liveCloseEvent && liveCloseEvent.closedTrades.length > 0) {
+          console.log(`\n🛑 >>> [${symbol}] PAPER TRADE HIT TARGET/SL (${liveCloseEvent.closedTrades.map(t => t.reason).join(', ')})! BROADCASTING TELEGRAM ALERT <<<`);
+          const msg = formatTradeClosedMessage(liveCloseEvent.closedTrades, liveCloseEvent.stats, liveCloseEvent.wallet, displayName);
+          await broadcastTelegramAlert(telegram.botToken, msg);
         }
       }
-    } else if (activeTrades.length === 0) {
-      console.log(`- BUY Checklist: Trend(${buyConditions.trendAligned ? '✅' : '❌'}) RSI(${buyConditions.rsiInOptimalZone ? '✅' : '❌'}) MACD(${buyConditions.macdBullishExpanding ? '✅' : '❌'}) Vol(${buyConditions.volumeConfirmed ? '✅' : '❌'}) Support(${buyConditions.supportBounce ? '✅' : '❌'}) AI(${buyConditions.aiConfidenceHigh ? '✅' : '❌'})`);
+
+      // Check current open trades for this specific coin
+      const currentActiveTrades = getActiveTrades();
+      const tradesForCoin = currentActiveTrades.filter(t => (t.symbol || 'BTCUSDT').replace('/', '') === symbol.replace('/', ''));
+
+      // 3B. Check SELL / EXIT Signals if we have an open trade on this coin
+      if (sellConditions.anyMatched && tradesForCoin.length > 0) {
+        console.log(`🚨 >>> [${symbol}] SELL / EXIT SIGNAL DETECTED! BROADCASTING TELEGRAM ALERT <<<`);
+        const msg = formatSellMessage(evalResult, tradesForCoin, displayName, interval);
+        await broadcastTelegramAlert(telegram.botToken, msg);
+
+        if (paperTrading?.enabled && paperTrading?.exitOnSellSignal) {
+          const exitEvent = checkLiveTrade(symbol, livePrice, true);
+          if (exitEvent && exitEvent.closedTrades.length > 0) {
+            console.log(`🔔 >>> CLOSING [${symbol}] ${exitEvent.closedTrades.length} TRADES DUE TO SELL SIGNAL <<<`);
+            const exitMsg = formatTradeClosedMessage(exitEvent.closedTrades, exitEvent.stats, exitEvent.wallet, displayName);
+            await broadcastTelegramAlert(telegram.botToken, exitMsg);
+          }
+        }
+      }
+
+      // 3C. Check BUY / Scaling-In Signals
+      if (currentActiveTrades.length < maxPositionsAllowed) {
+        let shouldTrade = false;
+        let isScaleIn = false;
+
+        if (tradesForCoin.length === 0) {
+          // Initial Buy Entry for this coin
+          if (buyConditions.allMatched) {
+            shouldTrade = true;
+            isScaleIn = false;
+          }
+        } else if (aiProfile.allowScalingIn) {
+          // Dynamic Scaling-in / Pyramiding for this coin
+          const scaleCheck = shouldScaleIntoPosition(tradesForCoin, livePrice, aiAnalysis, wallet.balance, evalResult.aiAnalysis?.evolvedStrategy);
+          if (scaleCheck.canScale) {
+            console.log(`⚡ [${symbol}] AI Pyramiding Triggered: ${scaleCheck.reason}`);
+            shouldTrade = true;
+            isScaleIn = true;
+          }
+        }
+
+        if (shouldTrade) {
+          console.log(`🚀 >>> [${symbol}] ${isScaleIn ? 'AI MULTI-POSITION SCALE-IN' : 'INITIAL BUY'} SIGNAL TRIGGERED! BROADCASTING TELEGRAM ALERT <<<`);
+          if (paperTrading?.enabled) {
+            const openResult = openTrade(symbol, livePrice, coinData.lastCandleTime, aiAnalysis, isScaleIn);
+            if (openResult.error === 'INSUFFICIENT_BALANCE') {
+              console.log(`⚠️ Insufficient balance to trade ${symbol}.`);
+              await broadcastTelegramAlert(telegram.botToken, `⚠️ *[ট্রেড স্কিপ - ${displayName}] অপর্যাপ্ত ওয়ালেট ব্যালেন্স!*\nপ্রয়োজন $${openResult.needed.toFixed(2)} USD, বর্তমান ব্যালেন্স $${openResult.balance.toFixed(2)} USD। ব্যালেন্স বাড়াতে \`/setbalance\` ব্যবহার করুন।`);
+            } else if (openResult.trade) {
+              console.log(`📥 >>> OPENED [${symbol}] POSITION #${openResult.trade.positionNumber}! BROADCASTING TELEGRAM ALERT <<<`);
+              const tradeMsg = formatBuyMessage(evalResult, openResult, displayName, interval);
+              await broadcastTelegramAlert(telegram.botToken, tradeMsg);
+            }
+          }
+        }
+      }
     }
 
-    lastEvaluatedCandleTime = lastClosedCandle.openTime;
+    // 4. Console Research Summary
+    const updatedTrades = getActiveTrades();
+    let tradeStatusText = 'No Active Trades';
+    if (updatedTrades.length > 0) {
+      tradeStatusText = `Positions (${updatedTrades.length}/${maxPositionsAllowed}): ${updatedTrades.map(t => {
+        const sym = (t.symbol || 'BTC').replace('/USDT', '').replace('USDT', '');
+        return `${sym}#${t.positionNumber}`;
+      }).join(', ')}`;
+    }
+
+    const btcPriceFormatted = btcResult.livePrice < 1 ? btcResult.livePrice.toFixed(4) : btcResult.livePrice.toFixed(1);
+    const topScorer = scanResults[0];
+    const topPriceFormatted = topScorer.livePrice < 1 ? topScorer.livePrice.toFixed(4) : topScorer.livePrice.toFixed(2);
+    const statusLine = `[${new Date().toLocaleTimeString()}] [${aiProfile.badge}] BTC: $${btcPriceFormatted} | Top Pick: ${topScorer.displayName} ($${topPriceFormatted}, Score: ${topScorer.aiAnalysis?.score}/100) | ${tradeStatusText}`;
+    process.stdout.write(`\r${statusLine}`);
 
   } catch (err) {
     console.error(`\n[${new Date().toLocaleTimeString()}] Error in checkMarket:`, err.message);
+  } finally {
+    isScanInProgress = false;
   }
 }
 
 async function start() {
   const config = loadConfig();
   const { wallet, settings } = getSettingsAndWallet();
+  const activeAI = getActiveAIModel();
+  const aiProfile = getAIProfile(activeAI);
 
   console.log('====================================================');
-  console.log(`  BTC 15m Scalping & AI Trading Bot Started`);
-  console.log(`  Symbol: ${config.symbol} | Interval: ${config.interval}`);
+  console.log(`  AI Multi-Coin Scalping & Research Bot Started`);
+  console.log(`  Active AI Model: ${aiProfile.name}`);
+  console.log(`  Monitored Coins: ${aiProfile.symbols.join(', ')}`);
+  console.log(`  Interval: ${config.interval || '15m'} | Max Positions: ${aiProfile.maxPositions}`);
   console.log(`  Mode: ${settings.mode} | Wallet: $${wallet.balance.toFixed(2)} USD`);
-  console.log(`  Checking every ${config.pollIntervalSeconds || 30} seconds`);
+  console.log(`  Scan Cycle: Every ${config.pollIntervalSeconds || 30} seconds`);
   console.log('====================================================');
 
   // Start Render Web Service HTTP Port Listener (Port Binding)
   const PORT = process.env.PORT || 10000;
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    const activeTrade = getActiveTrade();
-    const tradeText = activeTrade
-      ? `Active Paper Trade: $${activeTrade.tradeAmountUSD} @ $${activeTrade.entryPrice.toFixed(2)}`
+    const allActive = getActiveTrades();
+    const tradeText = allActive.length > 0
+      ? `Active Positions (${allActive.length}): ` + allActive.map(t => `${t.symbol || 'BTC'} $${t.tradeAmountUSD} @ $${t.entryPrice.toFixed(2)}`).join(' | ')
       : 'No Active Trade';
     res.end(`
       <html>
-        <head><title>BTC 15m AI Trading Bot</title></head>
+        <head><title>AI Multi-Coin Scalping Bot</title></head>
         <body style="font-family: sans-serif; background: #0f172a; color: white; padding: 2rem; text-align: center;">
-          <h1 style="color: #22c55e;">🚀 BTC 15m AI Scalping Bot</h1>
+          <h1 style="color: #22c55e;">🚀 AI Multi-Coin Trading Bot</h1>
           <p style="font-size: 1.2rem;">Status: <b style="color: #38bdf8;">Healthy & Monitoring 24/7</b></p>
+          <p style="color: #a855f7; font-weight: bold;">Active AI Model: ${aiProfile.name}</p>
           <p style="color: #94a3b8;">${tradeText}</p>
           <p style="color: #64748b; font-size: 0.9rem;">Server Time: ${new Date().toLocaleTimeString()}</p>
         </body>
@@ -266,8 +258,8 @@ async function start() {
     console.log(`✅ [Render] Web service HTTP port ${PORT} is open and listening. Health check active!`);
   });
 
-  // Start Telegram Command Listener (Handles /history, /ai, /settings, /settrade, etc.)
-  startTelegramListener(config.telegram.botToken, getLatestStatusMessage);
+  // Start Telegram Command Listener (Handles /aimodel, /models, /scan, /positions, /history, etc.)
+  startTelegramListener(config.telegram.botToken, getLatestStatusMessage, runScanResearch);
 
   // Initial check & broadcast startup notification
   await checkMarket(true);

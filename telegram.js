@@ -7,6 +7,8 @@
 const { getSubscribers, addSubscriber, removeSubscriber } = require('./subscriberManager');
 const {
   getSettingsAndWallet,
+  getActiveAIModel,
+  switchAIModel,
   updateWalletBalance,
   updateTradeAmount,
   updateStopLossPct,
@@ -15,6 +17,8 @@ const {
   getTradeHistory,
   getActiveTrades
 } = require('./paperTrading');
+const { AI_PROFILES, getAIProfile } = require('./aiProfiles');
+const { formatScanReport } = require('./marketScanner');
 
 async function sendTelegramAlert(botToken, chatId, message) {
   if (!botToken || !chatId || botToken.includes('YOUR_')) return false;
@@ -58,20 +62,55 @@ async function broadcastTelegramAlert(botToken, message) {
   await Promise.allSettled(promises);
 }
 
+function formatAIModelsMessage() {
+  const currentModelKey = getActiveAIModel();
+  const currentProfile = getAIProfile(currentModelKey);
+
+  const modelCards = Object.values(AI_PROFILES).map(p => {
+    const isActive = p.id === currentProfile.id;
+    const activeBadge = isActive ? ' 🟢 *[সক্রিয় (ACTIVE)]*' : '';
+    const coins = p.symbols.map(s => s.replace('USDT', '')).join(', ');
+
+    return `${p.name}${activeBadge}
+• কয়েন ইউনিভার্স: *${coins}*
+• ম্যাক্স পজিশন: *${p.maxPositions}টি* ${p.allowScalingIn ? '(স্কেলিং অনুমোদিত)' : '(একক ট্রেড)'}
+• আত্মবিশ্বাস স্কোর থ্রেশহোল্ড: *${p.confidenceThreshold}+*
+• রিস্ক ম্যানেজমেন্ট: SL *${p.minSLPct}-${p.maxSLPct}%* | RR *1:${p.rrTarget}*
+• বিবরণ: ${p.description}
+👉 সক্রিয় করতে লিখুন: \`/aimodel ${p.key}\``;
+  }).join('\n\n━━━━━━━━━━━━━━━━━━━━\n\n');
+
+  return `🤖 *AI ট্রেডিং রিস্ক মডেলসমূহ*
+━━━━━━━━━━━━━━━━━━━━
+বর্তমান সক্রিয় মডেল: *${currentProfile.name}*
+
+${modelCards}
+
+━━━━━━━━━━━━━━━━━━━━
+💡 যেকোনো মডেল সক্রিয় করতে টাইপ করুন:
+• \`/aimodel low\` ➡️ Conservative Guardian (Low Risk)
+• \`/aimodel mid\` ➡️ Balanced Growth (Mid Risk)
+• \`/aimodel high\` ➡️ Alpha Momentum (High Risk)
+• \`/scan\` ➡️ লাইভ মাল্টি-কয়েন স্ক্যান চালান`;
+}
+
 function formatSettingsMessage() {
   const data = getSettingsAndWallet();
-  const { wallet, settings, evolvedStrategy, activeTrades, stats } = data;
+  const { wallet, settings, evolvedStrategy, activeTrades, stats, activeAIModel } = data;
+  const currentProfile = getAIProfile(activeAIModel);
 
   const activeTradesCount = activeTrades ? activeTrades.length : 0;
-  const maxPos = evolvedStrategy?.maxPositions || settings.maxPositions || 3;
+  const maxPos = currentProfile?.maxPositions || evolvedStrategy?.maxPositions || settings.maxPositions || 3;
 
   return `⚙️ *আপনার ট্রেডিং ও ওয়ালেট সেটিংস*
 ━━━━━━━━━━━━━━━━━━━━
-🤖 *Strategy Mode:* *${settings.mode === 'AI' ? '🧠 AI Smart Dynamic Mode' : '🛠️ Manual Mode'}*
+🤖 *AI Model:* *${currentProfile.name}*
+🔬 *Strategy Mode:* *${settings.mode === 'AI' ? '🧠 AI Smart Dynamic Mode' : '🛠️ Manual Mode'}*
 💰 *Wallet Balance:* $${wallet.balance.toFixed(2)} USD
 💵 *Trade Value:* $${settings.tradeAmountUSD.toFixed(2)} USD (Manual)
 🛡️ *Stop Loss:* ${settings.stopLossPct.toFixed(2)}% | 🎯 *Take Profit:* ${settings.takeProfitPct.toFixed(2)}%
 📊 *Active Positions:* ${activeTradesCount} / ${maxPos} ${settings.mode === 'AI' ? '(Pyramiding Active 🚀)' : ''}
+🪙 *Monitored Coins:* ${currentProfile.symbols.map(s => s.replace('USDT', '')).join(', ')}
 
 📊 *পারফরম্যান্স সামারি:*
 • মোট ট্রেড: ${stats.totalTrades} | জয়: ${stats.wins} | পরাজয়: ${stats.losses}
@@ -80,6 +119,8 @@ function formatSettingsMessage() {
 
 ━━━━━━━━━━━━━━━━━━━━
 💡 *কন্ট্রোল কমান্ডসমূহ:*
+• \`/aimodel\` ➡️ AI মডেলসমূহ ও পরিবর্তন (Low/Mid/High)
+• \`/scan\` ➡️ মাল্টি-কয়েন লাইভ AI রিসার্চ রিপোর্ট
 • \`/positions\` ➡️ রানিং পজিশন ও লাইভ লাভ/ক্ষতি দেখুন
 • \`/strategy\` ➡️ AI এর স্বয়ংক্রিয় স্ট্র্যাটেজি ও রুলস দেখুন
 • \`/mode ai\` ➡️ AI মোড চালু করুন (স্মার্ট SL/TP ও সাইজিং)
@@ -91,9 +132,14 @@ function formatSettingsMessage() {
 
 function formatPositionsMessage(currentPrice = null) {
   const activeTrades = getActiveTrades();
+  const currentProfile = getAIProfile(getActiveAIModel());
+  const maxPos = currentProfile.maxPositions;
+
   if (!activeTrades || activeTrades.length === 0) {
     return `⚪ *বর্তমানে কোনো অ্যাক্টিভ ট্রেড নেই।*
-মার্কেট পর্যবেক্ষণ করা হচ্ছে। উপযুক্ত সিগন্যাল পেলে AI স্বয়ংক্রিয়ভাবে পজিশন ওপেন করবে।`;
+Active AI: *${currentProfile.name}*
+কয়েন মনিটর করা হচ্ছে: ${currentProfile.symbols.map(s => s.replace('USDT', '')).join(', ')}।
+উপযুক্ত সিগন্যাল পেলে AI স্বয়ংক্রিয়ভাবে পজিশন ওপেন করবে।`;
   }
 
   let totalInvested = 0;
@@ -101,21 +147,29 @@ function formatPositionsMessage(currentPrice = null) {
 
   const list = activeTrades.map((t, idx) => {
     totalInvested += t.tradeAmountUSD;
-    const priceNow = currentPrice || t.entryPrice;
+    let priceNow = t.entryPrice;
+    if (typeof currentPrice === 'number') {
+      priceNow = currentPrice;
+    } else if (currentPrice && typeof currentPrice === 'object') {
+      const symKey = (t.symbol || 'BTCUSDT').replace('/', '');
+      priceNow = currentPrice[symKey] || currentPrice[t.symbol] || t.entryPrice;
+    }
+
     const pnlPct = ((priceNow - t.entryPrice) / t.entryPrice) * 100;
     const pnlUSD = t.tradeAmountUSD * (pnlPct / 100);
     totalUnrealizedUSD += pnlUSD;
 
     const emoji = pnlUSD >= 0 ? '🎉' : '🛑';
     const tag = t.isScaleIn ? `(Scale-in #${t.positionNumber})` : '(Primary Entry)';
+    const symDisplay = t.symbol ? t.symbol.replace('/', '').replace('USDT', '/USDT') : 'BTC/USDT';
 
-    return `${emoji} *Position #${t.positionNumber || (idx + 1)}* ${tag}
-• Size: $${t.tradeAmountUSD.toFixed(2)} USD @ $${t.entryPrice.toFixed(2)}
+    return `${emoji} *Pos #${t.positionNumber || (idx + 1)}* [${symDisplay}] ${tag}
+• Size: $${t.tradeAmountUSD.toFixed(2)} USD @ $${t.entryPrice < 1 ? t.entryPrice.toFixed(4) : t.entryPrice.toFixed(2)}
 • Live PnL: *${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%* (${pnlUSD >= 0 ? '+' : ''}$${pnlUSD.toFixed(3)} USD)
-• SL: $${t.stopLossPrice.toFixed(2)} (-${t.stopLossPct}%) | TP: $${t.takeProfitPrice.toFixed(2)} (+${t.takeProfitPct}%)`;
+• SL: $${t.stopLossPrice < 1 ? t.stopLossPrice.toFixed(4) : t.stopLossPrice.toFixed(2)} (-${t.stopLossPct}%) | TP: $${t.takeProfitPrice < 1 ? t.takeProfitPrice.toFixed(4) : t.takeProfitPrice.toFixed(2)} (+${t.takeProfitPct}%)`;
   }).join('\n\n');
 
-  return `📊 *বর্তমানে রানিং পজিশনসমূহ (Active: ${activeTrades.length}/3)*
+  return `📊 *বর্তমানে রানিং পজিশনসমূহ (Active: ${activeTrades.length}/${maxPos})*
 ━━━━━━━━━━━━━━━━━━━━
 ${list}
 
@@ -162,8 +216,9 @@ function formatHistoryMessage() {
         t.reason === 'STOP_LOSS_HIT' ? 'SL Hit 🛡️' :
         t.reason === 'TAKE_PROFIT_HIT' ? 'TP Hit 🎯' : 'Exit Signal 🔔';
       const scaleLabel = t.isScaleIn ? ` [Scale #${t.positionNumber}]` : '';
+      const symDisplay = t.symbol ? t.symbol.replace('/', '').replace('USDT', '/USDT') : 'BTC/USDT';
 
-      return `${emoji} *#${t.id || (recent.length - idx)}* ($${t.tradeAmountUSD.toFixed(1)})${scaleLabel} ${timeStr}\n• Entry: $${t.entryPrice.toFixed(1)} ➡️ Exit: $${t.exitPrice.toFixed(1)}\n• PnL: *${t.pnlPct >= 0 ? '+' : ''}${t.pnlPct.toFixed(2)}%* (${t.pnlUSD >= 0 ? '+' : ''}$${t.pnlUSD.toFixed(3)}) | ${reasonLabel}`;
+      return `${emoji} *#${t.id || (recent.length - idx)}* [${symDisplay}] ($${t.tradeAmountUSD.toFixed(1)})${scaleLabel} ${timeStr}\n• Entry: $${t.entryPrice < 1 ? t.entryPrice.toFixed(4) : t.entryPrice.toFixed(2)} ➡️ Exit: $${t.exitPrice < 1 ? t.exitPrice.toFixed(4) : t.exitPrice.toFixed(2)}\n• PnL: *${t.pnlPct >= 0 ? '+' : ''}${t.pnlPct.toFixed(2)}%* (${t.pnlUSD >= 0 ? '+' : ''}$${t.pnlUSD.toFixed(3)}) | ${reasonLabel}`;
     }).join('\n\n');
   }
 
@@ -214,6 +269,13 @@ ${reasonsList}
 function formatHelpMessage() {
   return `🤖 *বটের সমস্ত কমান্ডসমূহ:*
 ━━━━━━━━━━━━━━━━━━━━
+🤖 *AI মডেল ও মাল্টি-কয়েন স্ক্যানিং:*
+• \`/aimodel\` বা \`/models\` - AI রিস্ক মডেলসমূহের তালিকা ও সক্রিয় মডেল
+• \`/aimodel low\` - Conservative Guardian (কম ঝুঁকি, BTC/ETH/SOL)
+• \`/aimodel mid\` - Balanced Growth (মাঝারি ঝুঁকি, টপ ৬ লিকুইড কয়েন)
+• \`/aimodel high\` - Alpha Momentum Hunter (উচ্চ ঝুঁকি, ৮+ ভোলাটাইল কয়েন)
+• \`/scan\` - মাল্টি-কয়েন লাইভ AI রিসার্চ রিপোর্ট তৈরি করুন
+
 📊 *ট্রেডিং মনিটরিং:*
 • \`/positions\` - বর্তমানে রানিং সমস্ত পজিশন ও লাইভ লাভ/ক্ষতি
 • \`/history\` - পূর্বের সমস্ত ট্রেডের লাভ-ক্ষতি ও পারফরম্যান্স রিপোর্ট
@@ -237,10 +299,10 @@ function formatHelpMessage() {
 let lastUpdateId = 0;
 let isPolling = false;
 
-function startTelegramListener(botToken, getMarketSnapshot) {
+function startTelegramListener(botToken, getMarketSnapshot, runScanFn) {
   if (isPolling || !botToken || botToken.includes('YOUR_')) return;
   isPolling = true;
-  console.log('🤖 [Telegram Listener] Interactive command listener started. Listening for /positions, /strategy, /history, etc...');
+  console.log('🤖 [Telegram Listener] Interactive command listener started. Listening for /positions, /strategy, /history, /aimodel, /scan, etc...');
 
   async function poll() {
     try {
@@ -382,6 +444,45 @@ ${formatSettingsMessage()}
                 await sendTelegramAlert(botToken, chatId, snapshotMsg?.message || 'মার্কেট ডাটা লোড হচ্ছে, কিছুক্ষণ পর চেষ্টা করুন।');
               }
             }
+
+            // 15. /aimodel or /models
+            else if (cmd === '/aimodel' || cmd === '/models') {
+              if (!arg) {
+                await sendTelegramAlert(botToken, chatId, formatAIModelsMessage());
+              } else {
+                const lowerArg = arg.toLowerCase();
+                if (lowerArg === 'low' || lowerArg === 'mid' || lowerArg === 'high') {
+                  const switched = switchAIModel(lowerArg);
+                  const switchMsg = `✅ *AI রিস্ক মডেল সফলভাবে পরিবর্তন করা হয়েছে!*
+━━━━━━━━━━━━━━━━━━━━
+🎯 *সক্রিয় মডেল:* *${switched.name}*
+📊 *কয়েন মনিটরিং:* ${switched.symbols.map(s => s.replace('USDT', '')).join(', ')}
+⚖️ *ম্যাক্স পজিশন:* ${switched.maxPositions}টি ${switched.allowScalingIn ? '(স্কেলিং অ্যাক্টিভ)' : '(একক ট্রেড)'}
+🛡️ *স্টপ-লস রেঞ্জ:* ${switched.minSLPct}% - ${switched.maxSLPct}% | RR: 1:${switched.rrTarget}
+━━━━━━━━━━━━━━━━━━━━
+💡 লাইভ রিসার্চ দেখতে টাইপ করুন: \`/scan\``;
+                  await sendTelegramAlert(botToken, chatId, switchMsg);
+                } else {
+                  await sendTelegramAlert(botToken, chatId, '⚠️ অনুগ্রহ করে সঠিক মডেল লিখুন: `/aimodel low` অথবা `/aimodel mid` অথবা `/aimodel high`\n\nমডেলসমূহ বিস্তারিত দেখতে `/models` পাঠান।');
+                }
+              }
+            }
+
+            // 16. /scan (Multi-Coin In-depth AI Research)
+            else if (cmd === '/scan') {
+              await sendTelegramAlert(botToken, chatId, '🔍 *AI মার্কেট রিসার্চ চলছে...* কয়েনগুলো গভীরভাবে অ্যানালাইসিস করা হচ্ছে, অনুগ্রহ করে কয়েক সেকেন্ড অপেক্ষা করুন...');
+              try {
+                if (runScanFn) {
+                  const scanReport = await runScanFn();
+                  await sendTelegramAlert(botToken, chatId, scanReport);
+                } else {
+                  const curProfile = getAIProfile(getActiveAIModel());
+                  await sendTelegramAlert(botToken, chatId, `মার্কেট স্ক্যানার প্রস্তুত হচ্ছে... সক্রিয় মডেল: ${curProfile.name}`);
+                }
+              } catch (scanErr) {
+                await sendTelegramAlert(botToken, chatId, `⚠️ স্ক্যান করতে সমস্যা হয়েছে: ${scanErr.message}`);
+              }
+            }
           }
         }
       }
@@ -396,21 +497,22 @@ ${formatSettingsMessage()}
 function formatStartupMessage(result, symbol = 'BTC/USDT', interval = '15m') {
   const { price, indicators, buyConditions, aiAnalysis } = result;
   const timeStr = new Date().toLocaleTimeString();
-  const { wallet, settings, evolvedStrategy } = getSettingsAndWallet();
+  const { wallet, settings, evolvedStrategy, activeAIModel } = getSettingsAndWallet();
+  const curProfile = getAIProfile(activeAIModel);
 
   const aiDetails = aiAnalysis ? `\n🧠 *AI Strategy:* ${evolvedStrategy?.activeStyle || aiAnalysis.regime.regimeName}\n🎯 *AI Confidence Score:* ${aiAnalysis.score}/100\n⚡ *AI Stance:* ${aiAnalysis.stanceEmoji} ${aiAnalysis.aiStance}` : '';
 
   return `🟢 *[BOT STARTED & MONITORING]*
 ━━━━━━━━━━━━━━━━━━━━
-🤖 *Bot Status:* Live & Watching 15m Candles
+🤖 *Active AI Model:* *${curProfile.name}*
 ⏰ *Start Time:* ${timeStr}
-📊 *Symbol:* ${symbol} (${interval})
+📊 *Universe:* ${curProfile.symbols.map(s => s.replace('USDT', '')).join(', ')} (${interval})
 ⚙️ *Active Mode:* *${settings.mode === 'AI' ? '🧠 AI Smart Dynamic' : '🛠️ Manual'}*
 
 💼 *Wallet & Multi-Trade Settings:*
 💰 *Wallet Balance:* $${wallet.balance.toFixed(2)} USD
 💵 *Trade Value:* $${settings.tradeAmountUSD.toFixed(2)} USD (Manual)
-⚖️ *Max Concurrent Positions:* ${evolvedStrategy?.maxPositions || 3}টি (Scaling Allowed)${aiDetails}
+⚖️ *Max Concurrent Positions:* ${curProfile.maxPositions}টি ${curProfile.allowScalingIn ? '(Scaling Allowed)' : '(Single Pos)'}${aiDetails}
 
 📈 *Current Market Snapshot:*
 💰 *Live BTC Price:* $${price.toFixed(2)}
@@ -423,7 +525,7 @@ function formatStartupMessage(result, symbol = 'BTC/USDT', interval = '15m') {
 • Trend: ${buyConditions.trendAligned ? '✅' : '❌'} | RSI: ${buyConditions.rsiInOptimalZone ? '✅' : '❌'} | MACD: ${buyConditions.macdBullishExpanding ? '✅' : '❌'}
 • Volume: ${buyConditions.volumeConfirmed ? '✅' : '❌'} | Support: ${buyConditions.supportBounce ? '✅' : '❌'} | AI: ${buyConditions.aiConfidenceHigh ? '✅' : '❌'}
 ━━━━━━━━━━━━━━━━━━━━
-💡 বিস্তারিত কমান্ড দেখতে \`/help\` পাঠান। হিস্ট্রি দেখতে \`/history\`। রানিং ট্রেড দেখতে \`/positions\`।`;
+💡 বিস্তারিত কমান্ড দেখতে \`/help\` পাঠান। \`/aimodel\` দিয়ে মডেল পরিবর্তন করুন। হিস্ট্রি দেখতে \`/history\`।`;
 }
 
 function formatBuyMessage(evaluation, openResult, symbol = 'BTC/USDT', interval = '15m') {
@@ -536,6 +638,7 @@ module.exports = {
   startTelegramListener,
   formatSettingsMessage,
   formatPositionsMessage,
+  formatAIModelsMessage,
   formatStrategyProfileMessage,
   formatHistoryMessage,
   formatAIMarketMessage,
